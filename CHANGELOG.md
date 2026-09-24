@@ -5,6 +5,8 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-09-24
+
 ### Hinzugefügt
 - **Passkeys aus dem Tresor:** Fragt eine Webseite nach einem Passkey, bietet die Erweiterung die im
   OpenNIT-Tresor gespeicherten Passkeys für diese Seite an – als Dialog oder, bei der Autofill-Variante,
