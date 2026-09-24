@@ -50,12 +50,13 @@ Die Erweiterung ist ein **Manifest-V3-Client** ohne eigenen Server. Sie besteht 
 
 Alle Endpunkte unter `/api/vault/extension/` mit `Authorization: Bearer <token>`:
 
-- `GET  /entries` – Liste (Titel, Benutzer, URL, Notizen, `has_totp`, `favicon_domain`, `has_favicon`)
+- `GET  /entries` – Liste (Titel, Benutzer, URL, Notizen, `has_totp`, `favicon_domain`, `has_favicon`, `can_write`)
 - `GET  /entries/{id}/password` – Passwort (protokolliert im Audit-Log)
 - `GET  /entries/{id}/totp` – aktueller TOTP-Code + Restsekunden
 - `GET  /entries/{id}/favicon?fetch=1` – gecachtes Favicon (bei Bedarf serverseitig geholt)
-- `POST /entries` – neuen Eintrag anlegen
-- `POST /entries/{id}` – Eintrag ändern (leeres Passwortfeld = unverändert)
+- `POST /entries` – neuen Eintrag anlegen (optional `totp`: Base32 oder `otpauth://`-Link)
+- `POST /entries/{id}` – Eintrag ändern (leeres Passwortfeld = unverändert; `totp` setzt ein neues
+  2FA-Secret, `totp_clear=1` entfernt es, ohne beides bleibt es erhalten; Ordner und Ablaufdatum bleiben)
 - `POST /entries/{id}/delete` – Eintrag löschen
 - `GET  /status` – Token gültig? + `pin_enabled` / `pin_lock_secs`
 - `POST /unlock` – Tresor-PIN verifizieren + serverseitiges Entsperr-Fenster für den Token setzen

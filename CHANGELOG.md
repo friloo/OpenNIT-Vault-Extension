@@ -5,6 +5,25 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-24
+
+### Hinzugefügt
+- **2FA-Secret in der Erweiterung hinterlegen:** Beim Anlegen und Bearbeiten eines Eintrags gibt es
+  ein Feld für das TOTP-Secret. Angenommen wird das Base32-Secret oder der `otpauth://`-Link, den ein
+  Dienst als QR-Code zeigt (nur Standard-TOTP: SHA1, 6 Stellen, 30 s). Beim Bearbeiten bleibt ein
+  vorhandenes Secret erhalten, solange das Feld leer bleibt; „Hinterlegtes 2FA-Secret entfernen" löscht
+  es. Unbrauchbare Eingaben werden mit einer Meldung abgewiesen. Benötigt eine OpenNIT-Version, deren
+  Erweiterungs-Schnittstelle das Feld `totp` annimmt.
+
+### Behoben
+- **Team-Einträge lassen sich wieder bearbeiten und löschen:** Der Server meldete auch mit Schreibrecht
+  im Team „Nur Leserechte für dieses Team", weil er den Team-Schlüssel aus der Web-Sitzung holte, die
+  es bei der Anmeldung per Token nicht gibt. Die Korrektur liegt im OpenNIT-Server (Erweiterungs-
+  Schnittstelle); die Erweiterung blendet „Bearbeiten" und „Löschen" zusätzlich aus, wenn der Server
+  für einen Team-Eintrag nur Leserecht meldet, statt erst beim Speichern zu scheitern.
+- **Ablaufdatum bleibt beim Bearbeiten erhalten:** Ein in OpenNIT gesetztes Ablaufdatum ging beim
+  Speichern aus der Erweiterung verloren (Korrektur im OpenNIT-Server).
+
 ## [2.5.0] - 2026-07-31
 
 ### Hinzugefügt

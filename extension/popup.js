@@ -5,6 +5,7 @@ let pageMatches = [];
 let entryIndex  = {};      // id -> entry
 let detailState = null;    // aktiver Eintrag im Detail-Panel
 let selIndex    = -1;      // Tastatur-Auswahl in der Liste
+let editingId   = null;    // gesetzt, solange das Panel einen bestehenden Eintrag bearbeitet
 
 function $(id) { return document.getElementById(id); }
 
@@ -28,13 +29,14 @@ async function init() {
     // Detail-Panel
     $('btnDetailBack').addEventListener('click', closeDetail);
     $('btnDetailClose').addEventListener('click', closeDetail);
-    $('btnRevealUser').addEventListener('click', toggleRevealUser);
     $('btnCopyUser').addEventListener('click', () => copySecret($('detailUser').dataset.value || '', 'Benutzername kopiert'));
     $('btnRevealPass').addEventListener('click', toggleRevealPass);
     $('btnCopyPass').addEventListener('click', copyDetailPassword);
     $('btnCopyTotp').addEventListener('click', () => { const c = $('detailTotp').dataset.code || ''; if (c) copySecret(c, 'TOTP kopiert'); });
-    $('btnCopyNotes').addEventListener('click', () => copyToClipboard($('detailNotes').dataset.value || '', 'Notiz kopiert'));
+    $('btnCopyNotes').addEventListener('click', () => copySecret($('detailNotes').dataset.value || '', 'Notiz kopiert'));
     $('btnDetailFill').addEventListener('click', fillActiveTab);
+    $('btnDetailEdit').addEventListener('click', openEditPanel);
+    $('btnDetailDelete').addEventListener('click', deleteCurrentEntry);
 
     // Lock-Screen
     $('lockSubmit').addEventListener('click', submitPin);
@@ -211,6 +213,9 @@ function setSel(items, idx) {
 
 // ── New Entry ─────────────────────────────────────────────────────────────
 function openNewPanel() {
+    editingId = null;
+    $('panelTitle').textContent = 'Neuen Eintrag anlegen';
+    $('nePassword').placeholder = 'Passwort';
     $('listWrap').style.display = 'none';
     $('search').closest('.search-wrap').style.display = 'none';
     $('detailPanel').style.display = 'none';
@@ -222,6 +227,7 @@ function openNewPanel() {
     $('neUrl').value = '';
     $('neNotes').value = '';
     $('newEntryMsg').textContent = '';
+    resetTotpFields(false);
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
         const url = tabs[0]?.url;
         if (url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://')) {
@@ -232,74 +238,165 @@ function openNewPanel() {
 }
 
 function closeNewPanel() {
+    editingId = null;
     $('newEntryPanel').style.display = 'none';
     $('listWrap').style.display = '';
     $('search').closest('.search-wrap').style.display = '';
 }
 
+// 2FA-Felder des Panels: Beim Bearbeiten eines Eintrags mit hinterlegtem Secret
+// bleibt das Feld leer (leer = unverändert) und die Entfernen-Option erscheint.
+function resetTotpFields(hasTotp) {
+    const f = $('neTotp');
+    f.value = '';
+    f.placeholder = hasTotp ? '2FA-Secret (leer = unverändert)' : '2FA-Secret (Base32 oder otpauth://-Link)';
+    $('neTotpClear').checked = false;
+    $('neTotpClearRow').style.display = hasTotp ? 'flex' : 'none';
+}
+
+// Bringt die Eingabe in die Form, die der Server ablegt: Base32 in Großbuchstaben,
+// ohne Leerzeichen/Bindestriche/Padding. Aus einem otpauth://totp/-Link zählt nur
+// der Secret-Parameter; abweichende Parameter (Algorithmus, Stellen, Periode)
+// werden abgewiesen, weil daraus nur falsche Codes entstünden.
+// Rückgabe: '' bei leerer Eingabe, Secret bei gültiger, null bei unbrauchbarer.
+function normalizeTotpSecret(input) {
+    let s = String(input || '').trim();
+    if (!s) return '';
+    if (/^otpauth:\/\//i.test(s)) {
+        let u;
+        try { u = new URL(s); } catch { return null; }
+        if (u.protocol.toLowerCase() !== 'otpauth:' || u.host.toLowerCase() !== 'totp') return null;
+        const p = u.searchParams;
+        if ((p.get('algorithm') || 'SHA1').toUpperCase() !== 'SHA1') return null;
+        if ((p.get('digits') || '6') !== '6' || (p.get('period') || '30') !== '30') return null;
+        s = p.get('secret') || '';
+    }
+    s = s.replace(/[\s-]+/g, '').toUpperCase().replace(/=+$/, '');
+    return /^[A-Z2-7]+$/.test(s) ? s : null;
+}
+
+// Gleichverteilte Zufallszahl aus [0, max) – verwirft die Werte des obersten,
+// unvollständigen Blocks, damit kein Rest-Modulo einzelne Zeichen bevorzugt.
+function randomBelow(max) {
+    const limit = Math.floor(0x100000000 / max) * max;
+    const buf = new Uint32Array(1);
+    do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
+    return buf[0] % max;
+}
+
+/** Zeichensätze ohne optisch verwechselbare Zeichen (l/I/1, O/0). */
+const GEN_SETS = [
+    'abcdefghijkmnopqrstuvwxyz',
+    'ABCDEFGHJKLMNPQRSTUVWXYZ',
+    '23456789',
+];
+const GEN_SYMBOLS = '!@#$%^&*()-_=+[]{}';
+
 function generatePassword() {
-    const len = 20;
-    const sets = [
-        'abcdefghijkmnopqrstuvwxyz',
-        'ABCDEFGHJKLMNPQRSTUVWXYZ',
-        '23456789',
-        '!@#$%^&*()-_=+[]{}',
-    ];
-    const all = sets.join('');
-    const buf = new Uint32Array(len);
-    crypto.getRandomValues(buf);
-    let out = [];
-    // Mindestens ein Zeichen je Set
-    sets.forEach((s, i) => { out.push(s[buf[i] % s.length]); });
-    for (let i = sets.length; i < len; i++) out.push(all[buf[i] % all.length]);
-    // mischen
+    const len  = Math.max(8, parseInt($('genLen').value, 10) || 20);
+    const sets = $('genSymbols').checked ? GEN_SETS.concat(GEN_SYMBOLS) : GEN_SETS.slice();
+    const all  = sets.join('');
+
+    // Je Satz ein Zeichen garantieren, den Rest frei ziehen …
+    const out = sets.map(s => s[randomBelow(s.length)]);
+    while (out.length < len) out.push(all[randomBelow(all.length)]);
+
+    // … und danach mischen, damit die garantierten Zeichen nicht vorne stehen.
+    // Der Zufall dafür wird frisch gezogen und nicht aus der Zeichenwahl wiederverwendet.
     for (let i = out.length - 1; i > 0; i--) {
-        const j = buf[i] % (i + 1);
+        const j = randomBelow(i + 1);
         [out[i], out[j]] = [out[j], out[i]];
     }
+
     $('nePassword').value = out.join('');
     $('nePassword').type = 'text';
 }
 
-async function saveNewEntry() {
+// Bestehenden Eintrag im selben Panel bearbeiten. Das Passwortfeld bleibt leer –
+// leer bedeutet serverseitig „unverändert", sodass das Passwort das Popup nie verlässt.
+function openEditPanel() {
+    if (!detailState) return;
+    const e = entryIndex[detailState.id];
+    if (!e) return;
+
+    editingId = detailState.id;
+    closeDetail();
+
+    $('panelTitle').textContent = 'Eintrag bearbeiten';
+    $('neTitle').value    = e.title || '';
+    $('neUsername').value = e.username || '';
+    $('nePassword').value = '';
+    $('nePassword').type  = 'password';
+    $('nePassword').placeholder = 'Passwort (leer = unverändert)';
+    $('neUrl').value      = e.url || '';
+    $('neNotes').value    = e.notes || '';
+    $('newEntryMsg').textContent = '';
+    resetTotpFields(!!e.has_totp);
+
+    $('listWrap').style.display = 'none';
+    $('search').closest('.search-wrap').style.display = 'none';
+    $('detailPanel').style.display = 'none';
+    $('newEntryPanel').style.display = 'block';
+    $('neTitle').focus();
+}
+
+function deleteCurrentEntry() {
+    if (!detailState) return;
+    const e = entryIndex[detailState.id];
+    if (!e) return;
+    if (!window.confirm('Eintrag „' + (e.title || '') + '" wirklich löschen?')) return;
+
+    const btn = $('btnDetailDelete');
+    btn.disabled = true;
+    chrome.runtime.sendMessage({ type: 'DELETE_ENTRY', id: detailState.id }, resp => {
+        btn.disabled = false;
+        if (resp?.ok) { closeDetail(); reload(true); showToast('Eintrag gelöscht'); return; }
+        if (resp?.locked) { showLockScreen(); return; }
+        showToast(resp?.error || 'Löschen fehlgeschlagen');
+    });
+}
+
+// Speichern läuft – wie alle anderen Aufrufe – über den Background-Service-Worker,
+// der den gültigen Zugang beisteuert.
+function saveNewEntry() {
     const title = $('neTitle').value.trim();
     if (!title) { $('newEntryMsg').textContent = 'Titel ist erforderlich.'; return; }
-
-    const cfg = await new Promise(r => chrome.storage.local.get(['serverUrl', 'apiToken'], r));
-    if (!cfg.serverUrl || !cfg.apiToken) { $('newEntryMsg').textContent = 'Nicht konfiguriert.'; return; }
+    const totp = normalizeTotpSecret($('neTotp').value);
+    if (totp === null) {
+        $('newEntryMsg').textContent = 'Ungültiges 2FA-Secret: Base32 oder otpauth://-Link (Standard-TOTP) erwartet.';
+        return;
+    }
 
     $('btnSaveNew').disabled = true;
     $('btnSaveNew').textContent = '...';
     $('newEntryMsg').textContent = '';
 
-    const fd = new FormData();
-    fd.append('title',    title);
-    fd.append('username', $('neUsername').value.trim());
-    fd.append('password', $('nePassword').value);
-    fd.append('url',      $('neUrl').value.trim());
-    fd.append('notes',    $('neNotes').value.trim());
+    const entry = {
+        title:    title,
+        username: $('neUsername').value.trim(),
+        password: $('nePassword').value,
+        url:      $('neUrl').value.trim(),
+        notes:    $('neNotes').value.trim(),
+        totp:     totp,
+        totp_clear: !!(editingId && $('neTotpClear').checked),
+    };
+    const msg = editingId
+        ? { type: 'UPDATE_ENTRY', id: editingId, entry }
+        : { type: 'CREATE_ENTRY', entry };
+    const wasEditing = !!editingId;
 
-    try {
-        const res  = await fetch(cfg.serverUrl + '/api/vault/extension/entries', {
-            method: 'POST',
-            headers: { 'Authorization': 'Bearer ' + cfg.apiToken },
-            body: fd,
-        });
-        const data = await res.json();
-        if (data.ok) {
-            chrome.runtime.sendMessage({ type: 'CLEAR_CACHE' });
+    chrome.runtime.sendMessage(msg, resp => {
+        $('btnSaveNew').disabled = false;
+        $('btnSaveNew').textContent = 'Speichern';
+        if (resp?.ok) {
             closeNewPanel();
             reload(true);
-            showToast('Eintrag gespeichert');
-        } else {
-            $('newEntryMsg').textContent = data.error || 'Fehler beim Speichern.';
+            showToast(wasEditing ? 'Eintrag aktualisiert' : 'Eintrag gespeichert');
+            return;
         }
-    } catch (e) {
-        $('newEntryMsg').textContent = 'Verbindungsfehler: ' + e.message;
-    }
-
-    $('btnSaveNew').disabled = false;
-    $('btnSaveNew').textContent = 'Speichern';
+        if (resp?.locked) { showLockScreen(); return; }
+        $('newEntryMsg').textContent = resp?.error || 'Fehler beim Speichern.';
+    });
 }
 
 // ── Liste (Klick öffnet Detailansicht) ─────────────────────────────────────
@@ -364,7 +461,7 @@ function openDetail(id) {
     const e = entryIndex[String(id)];
     if (!e) return;
     closeDetailTimers();
-    detailState = { id: String(id), password: null, revealUser: true, revealPass: false, totpInterval: null };
+    detailState = { id: String(id), password: null, revealPass: false, totpInterval: null };
 
     $('listWrap').style.display = 'none';
     $('search').closest('.search-wrap').style.display = 'none';
@@ -399,21 +496,18 @@ function openDetail(id) {
         urlLink.style.display = 'none';
     }
 
-    // Benutzername (standardmäßig sichtbar; Auge schaltet Maskierung)
+    // Benutzername – kein Geheimnis, daher immer im Klartext.
     const uval = e.username || '';
     const uEl  = $('detailUser');
     uEl.dataset.value = uval;
-    detailState.revealUser = true;
     if (uval) {
         uEl.classList.remove('empty');
         uEl.textContent = uval;
-        $('btnRevealUser').style.display = '';
-        $('btnCopyUser').style.display   = '';
+        $('btnCopyUser').style.display = '';
     } else {
         uEl.classList.add('empty');
         uEl.textContent = 'Kein Benutzername';
-        $('btnRevealUser').style.display = 'none';
-        $('btnCopyUser').style.display   = 'none';
+        $('btnCopyUser').style.display = 'none';
     }
 
     // Passwort (standardmäßig maskiert)
@@ -437,6 +531,12 @@ function openDetail(id) {
     } else {
         $('fieldTotp').style.display = 'none';
     }
+
+    // Bearbeiten/Löschen nur mit Schreibrecht (Team-Rolle „Betrachter" liest nur).
+    // Ältere Server liefern kein can_write – dann bleiben die Aktionen sichtbar.
+    const writable = e.can_write !== false;
+    $('detailActions').style.display  = writable ? '' : 'none';
+    $('detailReadonly').style.display = writable ? 'none' : 'block';
 }
 
 function closeDetail() {
@@ -445,14 +545,6 @@ function closeDetail() {
     $('detailPanel').style.display = 'none';
     $('listWrap').style.display = '';
     $('search').closest('.search-wrap').style.display = '';
-}
-
-function toggleRevealUser() {
-    const uEl = $('detailUser');
-    const val = uEl.dataset.value || '';
-    if (!val) return;
-    detailState.revealUser = !detailState.revealUser;
-    uEl.textContent = detailState.revealUser ? val : '•'.repeat(Math.min(val.length, 14));
 }
 
 async function ensurePassword(id) {
@@ -484,6 +576,12 @@ async function copyDetailPassword() {
     else showToast('Kein Passwort');
 }
 
+const TOTP_PERIOD = 30; // Sekunden pro Code (RFC 6238, Serverseite nutzt denselben Wert)
+
+// Restlaufzeit des 2FA-Codes. Die Anzeige rechnet gegen einen festen Ablaufzeitpunkt
+// statt blind herunterzuzählen – so bleibt sie korrekt, wenn der Timer gedrosselt wird
+// oder ein Tick ausfällt. Nachgeladen wird erst, wenn der Code abgelaufen ist, und pro
+// Ablauf nur einmal.
 function loadDetailTotp(id) {
     const codeEl = $('detailTotp');
     const secsEl = $('detailTotpSecs');
@@ -492,33 +590,55 @@ function loadDetailTotp(id) {
     codeEl.dataset.code = '';
     secsEl.textContent = '';
 
-    chrome.runtime.sendMessage({ type: 'GET_TOTP', id }, resp => {
-        if (!detailState || detailState.id !== String(id)) return;
-        if (!resp?.code) { codeEl.textContent = '—'; return; }
+    let deadline  = 0;
+    let refetching = false;
 
-        const apply = (code, remaining) => {
-            codeEl.textContent = code.slice(0, 3) + ' ' + code.slice(3);
-            codeEl.dataset.code = code;
-            secsEl.textContent = remaining + 's';
-            if (barEl) barEl.style.width = Math.round(remaining / 30 * 100) + '%';
-        };
+    const stillOpen = () => detailState && detailState.id === String(id);
+
+    const render = () => {
+        const secs = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+        secsEl.textContent = secs + 's';
+        if (barEl) {
+            barEl.style.width = Math.min(100, Math.round(secs / TOTP_PERIOD * 100)) + '%';
+            barEl.style.background = secs <= 10 ? '#dc3545' : '#34d399';
+        }
+        return secs;
+    };
+
+    const apply = (code, remaining) => {
+        codeEl.textContent = code.slice(0, 3) + ' ' + code.slice(3);
+        codeEl.dataset.code = code;
+        // Der Server liefert die Restsekunden des laufenden Zeitfensters; daraus wird
+        // ein Ablaufzeitpunkt, gegen den die Anzeige lokal rechnet.
+        deadline = Date.now() + (Number(remaining) > 0 ? Number(remaining) : TOTP_PERIOD) * 1000;
+        render();
+    };
+
+    const refetch = () => {
+        if (refetching) return;
+        refetching = true;
+        chrome.runtime.sendMessage({ type: 'GET_TOTP', id }, r => {
+            refetching = false;
+            if (!stillOpen()) return;
+            if (r?.code) { apply(r.code, r.remaining); return; }
+            // Kein Code mehr (gesperrt oder Verbindung weg) – Anzeige zurücksetzen
+            // statt weiter auf einem abgelaufenen Wert stehen zu bleiben.
+            closeDetailTimers();
+            codeEl.textContent = '—';
+            codeEl.dataset.code = '';
+            secsEl.textContent = '';
+            if (barEl) barEl.style.width = '0%';
+        });
+    };
+
+    chrome.runtime.sendMessage({ type: 'GET_TOTP', id }, resp => {
+        if (!stillOpen()) return;
+        if (!resp?.code) { codeEl.textContent = '—'; return; }
         apply(resp.code, resp.remaining);
 
-        let secs = resp.remaining;
         detailState.totpInterval = setInterval(() => {
-            secs--;
-            if (secs <= 0) {
-                chrome.runtime.sendMessage({ type: 'GET_TOTP', id }, r2 => {
-                    if (!detailState || detailState.id !== String(id)) return;
-                    if (r2?.code) { secs = r2.remaining; apply(r2.code, r2.remaining); }
-                });
-                return;
-            }
-            secsEl.textContent = secs + 's';
-            if (barEl) {
-                barEl.style.width = Math.round(secs / 30 * 100) + '%';
-                barEl.style.background = secs < 10 ? '#dc3545' : '#34d399';
-            }
+            if (!stillOpen()) return;
+            if (render() === 0) refetch();
         }, 1000);
     });
 }
@@ -560,30 +680,12 @@ async function fillActiveTab() {
 }
 
 // ── Helfer ────────────────────────────────────────────────────────────────
-function hostOf(u) {
-    try {
-        const s = String(u || '');
-        return new URL(s.includes('://') ? s : 'https://' + s).hostname.replace(/^www\./, '').toLowerCase();
-    } catch { return ''; }
-}
+function hostOf(u) { return VaultUrl.host(u); }
 // True, wenn eine der (mehrzeiligen) Eintrags-URLs zur Seiten-Domain passt –
 // oder wenn im Eintrag gar keine URL hinterlegt ist (dann keine Warnung).
-function fillDomainMatches(entryUrls, pageUrl) {
-    const pageHost = hostOf(pageUrl);
-    const list = String(entryUrls || '').split('\n').map(s => s.trim()).filter(Boolean);
-    if (!list.length) return true;
-    if (!pageHost) return false;
-    return list.some(u => {
-        let eh = hostOf(u);
-        if (eh.startsWith('*.')) eh = eh.slice(2);
-        return eh && (pageHost === eh || pageHost.endsWith('.' + eh) || eh.endsWith('.' + pageHost));
-    });
-}
-function copyToClipboard(text, msg) {
-    navigator.clipboard.writeText(text).then(() => showToast(msg)).catch(() => showToast('Fehler'));
-}
-// Wie copyToClipboard, plant aber zusätzlich das automatische Leeren der
-// Zwischenablage (für Zugangsdaten/2FA).
+function fillDomainMatches(entryUrls, pageUrl) { return VaultUrl.matchesOrUnset(entryUrls, pageUrl); }
+// Alles, was aus einem Eintrag kommt, gilt als Geheimnis – Notizen enthalten in
+// der Praxis ebenso oft Wiederherstellungscodes wie das Passwortfeld selbst.
 function copySecret(text, msg) {
     navigator.clipboard.writeText(text).then(() => {
         showToast(msg);
@@ -597,6 +699,6 @@ function showToast(msg) {
     setTimeout(() => t.classList.remove('show'), 1800);
 }
 function esc(s)     { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escAttr(s) { return String(s||'').replace(/"/g,'&quot;'); }
+function escAttr(s) { return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
 init();
