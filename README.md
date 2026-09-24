@@ -20,6 +20,7 @@ deiner selbst gehosteten OpenNIT-Instanz und bietet:
 - ⌨️ **Autofill** von Benutzername, Passwort und **2FA/TOTP-Codes** – auch auf mehrstufigen Login-Seiten
 - 💡 **Vorschläge direkt im Eingabefeld** (passend zur aufgerufenen Website)
 - 👁️ **Detailansicht** mit Anzeigen/Kopieren von Zugangsdaten und 2FA-Code mit Countdown
+- 🔐 **2FA-Secret hinterlegen** – Base32-Secret oder `otpauth://`-Link beim Anlegen/Bearbeiten eintragen
 - ➕ **Neue Einträge anlegen** inkl. **Passwort-Generator**
 - 🔒 **PIN-Sperre** mit demselben PIN wie der Web-Tresor (Dauer frei wählbar, bis „bis Browser schließt")
 - ✏️ **Anlegen, Bearbeiten und Löschen** von Einträgen direkt im Popup

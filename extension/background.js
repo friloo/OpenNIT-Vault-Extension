@@ -159,28 +159,34 @@ async function fetchEntries(force = false) {
  * Läuft bewusst über `apiFetch`, damit derselbe Zugang wie für alle übrigen
  * Aufrufe gilt, inklusive automatischer Erneuerung des Access-Tokens.
  *
- * @param {{title?:string,username?:string,password?:string,url?:string,notes?:string}} fields
+ * @param {{title?:string,username?:string,password?:string,url?:string,notes?:string,totp?:string}} fields
  * @return {Promise<{ok:boolean,id?:number,locked?:boolean,error?:string}>}
  */
 async function createEntry(fields) {
     if (!(await isUnlocked())) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
     const body = new URLSearchParams();
     ['title', 'username', 'password', 'url', 'notes'].forEach(k => body.append(k, fields?.[k] ?? ''));
+    if (fields?.totp) body.append('totp', fields.totp);
     return writeEntry('/api/vault/extension/entries', body.toString());
 }
 
 /**
  * Ändert einen bestehenden Eintrag. Ein leeres Passwortfeld lässt das gespeicherte
- * Passwort unangetastet; 2FA-Secret und Ordner bleiben serverseitig erhalten.
+ * Passwort unangetastet; Ordner und Ablaufdatum bleiben serverseitig erhalten.
+ * Das 2FA-Secret wird neu gesetzt (`totp`), entfernt (`totp_clear`) oder behalten.
  *
  * @param {number|string} entryId
- * @param {{title?:string,username?:string,password?:string,url?:string,notes?:string}} fields
+ * @param {{title?:string,username?:string,password?:string,url?:string,notes?:string,totp?:string,totp_clear?:boolean}} fields
  * @return {Promise<{ok:boolean,locked?:boolean,error?:string}>}
  */
 async function updateEntry(entryId, fields) {
     if (!(await isUnlocked())) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
     const body = new URLSearchParams();
     ['title', 'username', 'password', 'url', 'notes'].forEach(k => body.append(k, fields?.[k] ?? ''));
+    // 2FA-Secret: nur senden, wenn es sich ändern soll (neu setzen oder entfernen);
+    // ohne beides lässt der Server das gespeicherte Secret unangetastet.
+    if (fields?.totp) body.append('totp', fields.totp);
+    else if (fields?.totp_clear) body.append('totp_clear', '1');
     return writeEntry(`/api/vault/extension/entries/${entryId}`, body.toString());
 }
 

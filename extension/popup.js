@@ -227,6 +227,7 @@ function openNewPanel() {
     $('neUrl').value = '';
     $('neNotes').value = '';
     $('newEntryMsg').textContent = '';
+    resetTotpFields(false);
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
         const url = tabs[0]?.url;
         if (url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://')) {
@@ -241,6 +242,37 @@ function closeNewPanel() {
     $('newEntryPanel').style.display = 'none';
     $('listWrap').style.display = '';
     $('search').closest('.search-wrap').style.display = '';
+}
+
+// 2FA-Felder des Panels: Beim Bearbeiten eines Eintrags mit hinterlegtem Secret
+// bleibt das Feld leer (leer = unverändert) und die Entfernen-Option erscheint.
+function resetTotpFields(hasTotp) {
+    const f = $('neTotp');
+    f.value = '';
+    f.placeholder = hasTotp ? '2FA-Secret (leer = unverändert)' : '2FA-Secret (Base32 oder otpauth://-Link)';
+    $('neTotpClear').checked = false;
+    $('neTotpClearRow').style.display = hasTotp ? 'flex' : 'none';
+}
+
+// Bringt die Eingabe in die Form, die der Server ablegt: Base32 in Großbuchstaben,
+// ohne Leerzeichen/Bindestriche/Padding. Aus einem otpauth://totp/-Link zählt nur
+// der Secret-Parameter; abweichende Parameter (Algorithmus, Stellen, Periode)
+// werden abgewiesen, weil daraus nur falsche Codes entstünden.
+// Rückgabe: '' bei leerer Eingabe, Secret bei gültiger, null bei unbrauchbarer.
+function normalizeTotpSecret(input) {
+    let s = String(input || '').trim();
+    if (!s) return '';
+    if (/^otpauth:\/\//i.test(s)) {
+        let u;
+        try { u = new URL(s); } catch { return null; }
+        if (u.protocol.toLowerCase() !== 'otpauth:' || u.host.toLowerCase() !== 'totp') return null;
+        const p = u.searchParams;
+        if ((p.get('algorithm') || 'SHA1').toUpperCase() !== 'SHA1') return null;
+        if ((p.get('digits') || '6') !== '6' || (p.get('period') || '30') !== '30') return null;
+        s = p.get('secret') || '';
+    }
+    s = s.replace(/[\s-]+/g, '').toUpperCase().replace(/=+$/, '');
+    return /^[A-Z2-7]+$/.test(s) ? s : null;
 }
 
 // Gleichverteilte Zufallszahl aus [0, max) – verwirft die Werte des obersten,
@@ -299,6 +331,7 @@ function openEditPanel() {
     $('neUrl').value      = e.url || '';
     $('neNotes').value    = e.notes || '';
     $('newEntryMsg').textContent = '';
+    resetTotpFields(!!e.has_totp);
 
     $('listWrap').style.display = 'none';
     $('search').closest('.search-wrap').style.display = 'none';
@@ -328,6 +361,11 @@ function deleteCurrentEntry() {
 function saveNewEntry() {
     const title = $('neTitle').value.trim();
     if (!title) { $('newEntryMsg').textContent = 'Titel ist erforderlich.'; return; }
+    const totp = normalizeTotpSecret($('neTotp').value);
+    if (totp === null) {
+        $('newEntryMsg').textContent = 'Ungültiges 2FA-Secret: Base32 oder otpauth://-Link (Standard-TOTP) erwartet.';
+        return;
+    }
 
     $('btnSaveNew').disabled = true;
     $('btnSaveNew').textContent = '...';
@@ -339,6 +377,8 @@ function saveNewEntry() {
         password: $('nePassword').value,
         url:      $('neUrl').value.trim(),
         notes:    $('neNotes').value.trim(),
+        totp:     totp,
+        totp_clear: !!(editingId && $('neTotpClear').checked),
     };
     const msg = editingId
         ? { type: 'UPDATE_ENTRY', id: editingId, entry }
@@ -491,6 +531,12 @@ function openDetail(id) {
     } else {
         $('fieldTotp').style.display = 'none';
     }
+
+    // Bearbeiten/Löschen nur mit Schreibrecht (Team-Rolle „Betrachter" liest nur).
+    // Ältere Server liefern kein can_write – dann bleiben die Aktionen sichtbar.
+    const writable = e.can_write !== false;
+    $('detailActions').style.display  = writable ? '' : 'none';
+    $('detailReadonly').style.display = writable ? 'none' : 'block';
 }
 
 function closeDetail() {
