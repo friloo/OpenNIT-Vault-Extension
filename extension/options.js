@@ -2,6 +2,12 @@
 
 function $(id) { return document.getElementById(id); }
 
+document.addEventListener('DOMContentLoaded', () => {
+    const a = $('shortcutLink');
+    if (a) a.addEventListener('click', e => { e.preventDefault(); chrome.tabs.create({ url: 'chrome://extensions/shortcuts' }); });
+    if (navigator.platform && /mac/i.test(navigator.platform) && $('shortcutKey')) $('shortcutKey').textContent = '⌘ + Umschalt + L';
+});
+
 // Gespeicherte Werte laden (überschreibt das vorausgefüllte Feld nur wenn bereits gespeichert)
 chrome.storage.local.get(['serverUrl'], cfg => {
     if (cfg.serverUrl) $('serverUrl').value = cfg.serverUrl;
@@ -152,8 +158,27 @@ function loadConnStatus() {
         if (data && data.ok) {
             if (data.app_name) { $('optTitle').textContent = 'OpenNIT Vault'; }
             if (data.user) { $('headerUser').textContent = data.app_name ? (data.user + ' · ' + data.app_name) : data.user; $('headerStatus').style.display = ''; }
+            showServerCompat(Number(data.api_version || 0));
         }
     });
+}
+
+// Der Server nennt den Stand seiner Schnittstelle. Fehlt er oder ist er zu
+// alt, sagt die Seite, welche Funktionen deshalb verborgen bleiben.
+const REQUIRED_API = 2;
+function showServerCompat(v) {
+    const el = $('serverCompat');
+    if (!el) return;
+    el.style.display = '';
+    if (v >= REQUIRED_API) {
+        el.style.color = '#198754';
+        el.textContent = '✓ Server-Schnittstelle Stand ' + v + ' – alle Funktionen verfügbar.';
+    } else {
+        el.style.color = '#b45309';
+        el.textContent = '⚠ Server-Schnittstelle zu alt (Stand ' + v + ', benötigt ' + REQUIRED_API + '). Ohne Server-Update fehlen: '
+            + 'Team-/Ordnerwahl beim Anlegen, Zusatzfelder, Passwort-Gesundheit, „Passwort aktualisieren?", Passkeys. '
+            + 'Ein eingetragenes 2FA-Secret wird von älteren Servern verworfen.';
+    }
 }
 
 $('btnSso').addEventListener('click', loginWithSso);

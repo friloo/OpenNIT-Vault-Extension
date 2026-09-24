@@ -30,6 +30,25 @@
                 "<all_urls>"
             ],
             "js": [
+                "passkey-page.js"
+            ],
+            "run_at": "document_start",
+            "world": "MAIN"
+        },
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
+                "passkey-bridge.js"
+            ],
+            "run_at": "document_start"
+        },
+        {
+            "matches": [
+                "<all_urls>"
+            ],
+            "js": [
                 "urlmatch.js",
                 "content.js"
             ],
@@ -44,5 +63,15 @@
         "16": "icon16.png",
         "48": "icon48.png",
         "128": "icon128.png"
+    },
+    "minimum_chrome_version": "111",
+    "commands": {
+        "fill-login": {
+            "suggested_key": {
+                "default": "Ctrl+Shift+L",
+                "mac": "Command+Shift+L"
+            },
+            "description": "Anmeldung auf der aktuellen Seite ausfüllen"
+        }
     }
 }

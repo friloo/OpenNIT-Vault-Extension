@@ -21,6 +21,11 @@ deiner selbst gehosteten OpenNIT-Instanz und bietet:
 - 💡 **Vorschläge direkt im Eingabefeld** (passend zur aufgerufenen Website)
 - 👁️ **Detailansicht** mit Anzeigen/Kopieren von Zugangsdaten und 2FA-Code mit Countdown
 - 🔐 **2FA-Secret hinterlegen** – Base32-Secret oder `otpauth://`-Link beim Anlegen/Bearbeiten eintragen
+- 🗝️ **Passkeys aus dem Tresor** – Anmelden und Registrieren mit Passkeys, die in OpenNIT liegen (persönlich oder im Team); der private Schlüssel bleibt auf dem Server
+- 💾 **„Passwort speichern / aktualisieren?"** nach dem Anmelden, mit Zielauswahl (Ordner/Team)
+- 📁 **Ziel beim Anlegen** – Ordner oder Team mit Schreibrecht statt nur persönlicher Tresor
+- 🩺 **Passwort-Gesundheit** – schwache und mehrfach verwendete Passwörter sind markiert; Zusatzfelder und Ablaufdatum in der Detailansicht
+- ⌨️ **Tastenkürzel** Strg + Umschalt + L füllt die Anmeldung aus
 - ➕ **Neue Einträge anlegen** inkl. **Passwort-Generator**
 - 🔒 **PIN-Sperre** mit demselben PIN wie der Web-Tresor (Dauer frei wählbar, bis „bis Browser schließt")
 - ✏️ **Anlegen, Bearbeiten und Löschen** von Einträgen direkt im Popup

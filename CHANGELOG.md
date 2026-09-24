@@ -5,6 +5,40 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+### Hinzugefügt
+- **Passkeys aus dem Tresor:** Fragt eine Webseite nach einem Passkey, bietet die Erweiterung die im
+  OpenNIT-Tresor gespeicherten Passkeys für diese Seite an – als Dialog oder, bei der Autofill-Variante,
+  direkt in der Vorschlagsliste am Benutzerfeld. Beim Registrieren eines neuen Passkeys fragt sie, ob er
+  im Tresor (an einem bestehenden oder neuen Eintrag, persönlich oder im Team) abgelegt werden soll.
+  „Browser verwenden" bleibt in jedem Dialog als Ausweg für die Passkeys des Browsers selbst. Der private
+  Schlüssel verlässt den Server nie; die Erweiterung reicht nur Signaturen weiter. In der Detailansicht
+  sind die Passkeys eines Eintrags sichtbar und löschbar. Benötigt Chrome 111 und Server-Schnittstelle 2.
+- **„Passwort speichern?" und „Passwort aktualisieren?":** Nach dem Absenden einer Anmeldung, für die
+  kein Eintrag existiert, erscheint oben rechts ein Hinweis mit Zielauswahl (persönlich, Ordner, Team).
+  Wurde für einen bekannten Eintrag ein anderes Passwort verwendet, bietet die Erweiterung das
+  Aktualisieren an – der Vergleich läuft auf dem Server, ohne dass das gespeicherte Passwort die
+  Instanz verlässt. „Nie für diese Seite" merkt sich die Domain. Das erfasste Passwort liegt bis zur
+  Entscheidung nur im Arbeitsspeicher der Erweiterung und verfällt nach 90 Sekunden.
+- **Ziel beim Anlegen:** Neue Einträge lassen sich in einem Ordner oder in einem Team mit Schreibrecht
+  anlegen; bisher landeten sie immer im persönlichen Tresor. Beim Bearbeiten lässt sich der Ordner
+  innerhalb des bestehenden Tresors wechseln.
+- **Zusatzfelder und Ablaufdatum:** Die Detailansicht zeigt das Ablaufdatum eines Eintrags (mit Hinweis
+  ab 14 Tagen vorher) und lädt Zusatzfelder auf Abruf – geheime Felder maskiert, mit Anzeigen und
+  Kopieren; der Abruf geheimer Felder steht im Audit-Log.
+- **Passwort-Gesundheit:** Schwache und mehrfach verwendete Passwörter sind in Liste und Detailansicht
+  markiert. Die Bewertung liefert der Server; Passwörter werden dafür nicht übertragen.
+- **Tastenkürzel:** Strg + Umschalt + L (Mac: ⌘ + Umschalt + L) füllt die Anmeldung aus, wenn genau ein
+  Eintrag zur Seite passt; sonst öffnet sich das Popup. Änderbar unter chrome://extensions/shortcuts.
+- **Server-Stand sichtbar:** Die Einstellungen zeigen, ob der Server die Schnittstelle in der nötigen
+  Fassung anbietet, und welche Funktionen sonst verborgen bleiben. Ein 2FA-Secret, das ein älterer
+  Server verwirft, meldet die Erweiterung nach dem Speichern statt zu schweigen.
+
+### Behoben
+- **Mehrere Adressen je Eintrag bleiben erhalten:** Das Adressfeld beim Anlegen und Bearbeiten war ein
+  einzeiliges URL-Feld; der Browser entfernte daraus die Zeilenumbrüche, sodass ein Eintrag mit mehreren
+  Adressen beim Speichern zu einer zusammengeklebten Adresse wurde. Das Feld ist jetzt mehrzeilig
+  (eine Adresse je Zeile), und der Server nimmt die Zeilen so an, wie der Web-Tresor sie speichert.
+
 ## [2.6.0] - 2026-09-24
 
 ### Hinzugefügt

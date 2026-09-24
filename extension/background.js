@@ -8,6 +8,7 @@ let cacheTime     = 0;
 const CACHE_TTL   = 5 * 60 * 1000; // 5 Minuten
 const faviconCache = new Map();
 let pendingClip = null;
+let healthCache = null, healthTime = 0;   // Passwort-Gesundheit, verfällt mit dem Eintrags-Cache
 let refreshInFlight = null;   // Single-Flight: verhindert parallele Refresh-Aufrufe (Rotation-Race)
 
 async function getServerUrl() {
@@ -167,6 +168,8 @@ async function createEntry(fields) {
     const body = new URLSearchParams();
     ['title', 'username', 'password', 'url', 'notes'].forEach(k => body.append(k, fields?.[k] ?? ''));
     if (fields?.totp) body.append('totp', fields.totp);
+    if (fields?.team_id) body.append('team_id', String(fields.team_id));
+    if (fields?.folder_id) body.append('folder_id', String(fields.folder_id));
     return writeEntry('/api/vault/extension/entries', body.toString());
 }
 
@@ -187,7 +190,18 @@ async function updateEntry(entryId, fields) {
     // ohne beides lässt der Server das gespeicherte Secret unangetastet.
     if (fields?.totp) body.append('totp', fields.totp);
     else if (fields?.totp_clear) body.append('totp_clear', '1');
+    // Ordner nur senden, wenn er sich ändern soll ('' = kein Ordner).
+    if (fields?.folder_id !== undefined && fields?.folder_id !== null) body.append('folder_id', String(fields.folder_id));
     return writeEntry(`/api/vault/extension/entries/${entryId}`, body.toString());
+}
+
+// Nur das Passwort eines Eintrags ersetzen; die übrigen Felder kommen aus der Liste.
+async function updatePassword(entryId, password) {
+    const r = await fetchEntries();
+    if (r.locked) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
+    const e = (r.entries || []).find(x => String(x.id) === String(entryId));
+    if (!e) return { ok: false, error: 'Eintrag nicht gefunden.' };
+    return updateEntry(entryId, { title: e.title, username: e.username || '', password, url: e.url || '', notes: e.notes || '' });
 }
 
 /**
@@ -213,11 +227,153 @@ async function writeEntry(path, body) {
         if (res.status === 423) { await onServerLocked(); return { ok: false, locked: true, error: 'Tresor gesperrt.' }; }
         const data = await res.json().catch(() => ({}));
         if (data.ok) {
-            cachedEntries = null; cacheTime = 0;
+            cachedEntries = null; cacheTime = 0; healthCache = null;
             return { ok: true, id: data.id };
         }
         return { ok: false, error: data.error || 'Fehler beim Speichern.' };
     } catch (e) { return { ok: false, error: 'Verbindungsfehler.' }; }
+}
+
+// ── Generischer Aufruf der neueren Endpunkte ────────────────────────────────
+// Liefert die JSON-Antwort des Servers oder {ok:false, locked|error}.
+async function apiCall(path, opts = {}) {
+    if (!(await isUnlocked())) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
+    try {
+        const res = await apiFetch(path, opts);
+        if (!res) return { ok: false, error: 'Nicht konfiguriert.' };
+        if (res.status === 423) { await onServerLocked(); return { ok: false, locked: true, error: 'Tresor gesperrt.' }; }
+        const data = await res.json().catch(() => ({}));
+        if (data && data.ok) return data;
+        return { ok: false, error: (data && data.error) || ('HTTP ' + res.status) };
+    } catch (e) { return { ok: false, error: 'Verbindungsfehler.' }; }
+}
+function formBody(obj) {
+    const b = new URLSearchParams();
+    Object.entries(obj || {}).forEach(([k, v]) => { if (v !== undefined && v !== null && v !== '') b.append(k, String(v)); });
+    return b.toString();
+}
+function postOpts(body) {
+    return { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body };
+}
+
+// ── Serverstand ─────────────────────────────────────────────────────────────
+// Der Server nennt in /status den Stand seiner Schnittstelle; Funktionen, die
+// er noch nicht kennt, bleiben in Popup und Seite verborgen.
+let serverApiVersion = null;
+async function apiVersion() {
+    if (serverApiVersion !== null) return serverApiVersion;
+    const sess = await chrome.storage.session.get(['apiVersion']);
+    if (typeof sess.apiVersion === 'number') return (serverApiVersion = sess.apiVersion);
+    await checkStatus();
+    return serverApiVersion ?? 0;
+}
+
+// ── Ziele, Zusatzfelder, Gesundheit, Passkeys ───────────────────────────────
+let targetsCache = null, targetsTime = 0;
+async function getTargets() {
+    if (targetsCache && Date.now() - targetsTime < 60 * 1000) return targetsCache;
+    if ((await apiVersion()) < 2) return { ok: false, error: 'Server zu alt.' };
+    const r = await apiCall('/api/vault/extension/targets');
+    if (r.ok) { targetsCache = r; targetsTime = Date.now(); }
+    return r;
+}
+async function getHealth() {
+    if (healthCache && Date.now() - healthTime < CACHE_TTL) return healthCache;
+    if ((await apiVersion()) < 2) return { ok: false, error: 'Server zu alt.' };
+    const r = await apiCall('/api/vault/extension/entries/health');
+    if (r.ok) { healthCache = r; healthTime = Date.now(); }
+    return r;
+}
+async function passkeyCreate(m) {
+    if ((await apiVersion()) < 2) return { ok: false, error: 'Server zu alt.' };
+    const r = await apiCall('/api/vault/extension/passkeys', postOpts(formBody({
+        rp_id: m.rpId, rp_name: m.rpName, user_handle: m.userHandle, user_name: m.userName, user_display: m.userDisplay,
+        entry_id: m.entryId, title: m.title, team_id: m.teamId, folder_id: m.folderId,
+    })));
+    if (r.ok) { cachedEntries = null; cacheTime = 0; }
+    return r;
+}
+
+// ── Beim Anmelden erfasste Zugangsdaten („Passwort speichern?") ─────────────
+// Das Passwort bleibt bis zur Entscheidung nur hier im Speicher, je Tab, mit
+// kurzer Verfallszeit; die Seite bekommt nur Anzeigedaten zurück.
+const CAPTURE_TTL = 90 * 1000;
+const pendingCaptures = new Map(); // tabId -> { host, origin, url, user, pw, ts }
+
+async function neverSaveHosts() {
+    const c = await new Promise(r => chrome.storage.local.get(['neverSaveHosts'], r));
+    return Array.isArray(c.neverSaveHosts) ? c.neverSaveHosts : [];
+}
+function setPendingCapture(tabId, data) {
+    if (tabId == null || !data || !data.pw) return;
+    pendingCaptures.set(tabId, Object.assign({ ts: Date.now() }, data));
+}
+// Bewertet den Auftrag eines Tabs: nichts zu tun, speichern oder aktualisieren.
+async function evaluateCapture(tabId) {
+    const c = pendingCaptures.get(tabId);
+    if (!c) return null;
+    const drop = () => { pendingCaptures.delete(tabId); return null; };
+    if (Date.now() - c.ts > CAPTURE_TTL) return drop();
+    if ((await neverSaveHosts()).includes(c.host)) return drop();
+    if (!(await isUnlocked())) return drop();
+    const r = await fetchEntries();
+    if (!r.entries) return drop();
+
+    const matches  = r.entries.filter(e => VaultUrl.matches(e.url, c.url));
+    const sameUser = matches.filter(e => String(e.username || '').toLowerCase() === String(c.user || '').toLowerCase());
+    if (sameUser.length) {
+        // Unverändertes Passwort → kein Hinweis. Prüfbar nur mit Server ≥ 2.
+        if ((await apiVersion()) < 2) return drop();
+        for (const e of sameUser) {
+            const chk = await apiCall(`/api/vault/extension/entries/${e.id}/password/check`, postOpts(formBody({ password: c.pw })));
+            if (chk.ok && chk.match) return drop();
+        }
+        const target = sameUser.find(e => e.can_write !== false);
+        if (!target) return drop();
+        return { kind: 'update', host: c.host, user: c.user, entry: { id: target.id, title: target.title } };
+    }
+    const targets = (await apiVersion()) >= 2 ? await getTargets() : null;
+    return { kind: 'save', host: c.host, user: c.user, targets: targets && targets.ok ? targets : null };
+}
+async function decideCapture(tabId, d) {
+    const c = pendingCaptures.get(tabId);
+    pendingCaptures.delete(tabId);
+    if (!d || d.action === 'dismiss') return { ok: true };
+    if (d.action === 'never') {
+        const hosts = await neverSaveHosts();
+        if (c && !hosts.includes(c.host)) hosts.push(c.host);
+        await new Promise(r => chrome.storage.local.set({ neverSaveHosts: hosts }, r));
+        return { ok: true };
+    }
+    if (!c) return { ok: false, error: 'Abgelaufen – bitte erneut anmelden.' };
+    if (d.action === 'save') {
+        return createEntry({ title: c.host, username: c.user, password: c.pw, url: c.origin, notes: '', team_id: d.team_id || '', folder_id: d.folder_id || '' });
+    }
+    if (d.action === 'update') return updatePassword(d.entryId, c.pw);
+    return { ok: false, error: 'Unbekannte Aktion.' };
+}
+chrome.tabs.onRemoved.addListener(tabId => pendingCaptures.delete(tabId));
+
+// ── Tastenkürzel: Anmeldung ausfüllen ───────────────────────────────────────
+// Genau ein passender Eintrag → sofort ausfüllen; sonst (oder gesperrt) das Popup.
+async function openPopupSafe() {
+    try { await chrome.action.openPopup(); } catch (e) { /* ältere Chrome-Versionen */ }
+}
+async function fillFromShortcut() {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab || !tab.id || !tab.url || !/^https?:/i.test(tab.url)) return;
+    if (!(await isUnlocked())) { await openPopupSafe(); return; }
+    const r = await fetchEntries();
+    const matches = (r.entries || []).filter(e => VaultUrl.matches(e.url, tab.url));
+    if (matches.length !== 1) { await openPopupSafe(); return; }
+    const e = matches[0];
+    const pw = await fetchPassword(e.id);
+    try {
+        await chrome.tabs.sendMessage(tab.id, { type: 'VAULT_FILL', id: e.id, username: e.username || '', password: pw || '', has_totp: !!e.has_totp });
+    } catch (err) { await openPopupSafe(); }
+}
+if (chrome.commands && chrome.commands.onCommand) {
+    chrome.commands.onCommand.addListener(cmd => { if (cmd === 'fill-login') fillFromShortcut(); });
 }
 
 async function fetchPassword(entryId) {
@@ -317,6 +473,10 @@ async function checkStatus() {
         if (data && typeof data.pin_enabled !== 'undefined') {
             await new Promise(r => chrome.storage.local.set({ lockEnabled: !!data.pin_enabled }, r));
         }
+        if (data && data.ok) {
+            serverApiVersion = Number(data.api_version || 0);
+            await chrome.storage.session.set({ apiVersion: serverApiVersion });
+        }
         return data;
     } catch { return { ok: false, reason: 'network_error' }; }
 }
@@ -356,6 +516,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (msg.type === 'CLIP_WRITE') { writeClipboard(msg.text || '').then(() => sendResponse({ ok: true })); return true; }
     if (msg.type === 'SCHEDULE_CLIP_CLEAR') { scheduleClipClear(msg.text || ''); sendResponse({ ok: true }); return true; }
     if (msg.type === 'CHECK_STATUS') { checkStatus().then(sendResponse); return true; }
+    if (msg.type === 'GET_API_VERSION') { apiVersion().then(v => sendResponse({ apiVersion: v })); return true; }
+    if (msg.type === 'GET_TARGETS') { getTargets().then(sendResponse); return true; }
+    if (msg.type === 'GET_FIELDS') { apiCall(`/api/vault/extension/entries/${msg.id}/fields`).then(sendResponse); return true; }
+    if (msg.type === 'GET_HEALTH') { getHealth().then(sendResponse); return true; }
+    if (msg.type === 'GET_ENTRY_PASSKEYS') { apiCall(`/api/vault/extension/entries/${msg.id}/passkeys`).then(sendResponse); return true; }
+    if (msg.type === 'PASSKEYS_FOR_RP') { apiCall('/api/vault/extension/passkeys?rp_id=' + encodeURIComponent(msg.rpId || '')).then(sendResponse); return true; }
+    if (msg.type === 'PASSKEY_CREATE') { passkeyCreate(msg).then(sendResponse); return true; }
+    if (msg.type === 'PASSKEY_ASSERT') {
+        apiCall(`/api/vault/extension/passkeys/${msg.id}/assert`, postOpts(formBody({ client_data_hash: msg.clientDataHash }))).then(sendResponse);
+        return true;
+    }
+    if (msg.type === 'PASSKEY_DELETE') {
+        apiCall(`/api/vault/extension/passkeys/${msg.id}/delete`, postOpts('')).then(r => { if (r.ok) { cachedEntries = null; cacheTime = 0; } sendResponse(r); });
+        return true;
+    }
+    if (msg.type === 'SET_PENDING_CAPTURE') { setPendingCapture(sender.tab?.id, msg.data); sendResponse({ ok: true }); return true; }
+    if (msg.type === 'TAKE_PENDING_CAPTURE') { evaluateCapture(sender.tab?.id).then(r => sendResponse({ capture: r })); return true; }
+    if (msg.type === 'CAPTURE_DECISION') { decideCapture(sender.tab?.id, msg.decision).then(sendResponse); return true; }
     if (msg.type === 'CLEAR_CACHE') { cachedEntries = null; cacheTime = 0; faviconCache.clear(); sendResponse({ ok: true }); return true; }
 });
 
