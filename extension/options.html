@@ -229,29 +229,13 @@ label.control-label {
                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right:2px;"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
                     Mit OpenNIT anmelden
                 </button>
+                <button class="btn btn-default" id="btnSave">URL speichern</button>
                 <button class="btn btn-default" id="btnLogout" style="display:none;">Abmelden</button>
                 <span id="ssoMsg"></span>
+                <span id="savedMsg"></span>
             </div>
-            <span class="form-text">Empfohlen: Anmeldung wie an OpenNIT (lokal + 2FA / Microsoft 365 / Keycloak). Der Zugang wird automatisch erneuert.</span>
+            <span class="form-text">Die Anmeldung erfolgt wie an OpenNIT (lokal + 2FA / Microsoft 365 / Keycloak). Der Zugang wird automatisch erneuert und l&auml;sst sich jederzeit im Vault widerrufen.</span>
             <div id="statusMsg"></div>
-
-            <!-- Erweitert: manueller Token -->
-            <details style="margin-top:1rem;">
-                <summary style="cursor:pointer;font-size:.82rem;color:#6c757d;font-weight:600;">Erweitert: manueller Token</summary>
-                <div style="margin-top:.75rem;">
-                    <div class="form-group">
-                        <label class="control-label" for="apiToken">API-Token</label>
-                        <input type="password" class="form-control" id="apiToken"
-                               placeholder="Token aus dem Vault einf&uuml;gen&hellip;">
-                        <span class="form-text">Alternative ohne SSO (z. B. Kiosk/Headless): Vault &rarr; &bdquo;Extension&ldquo; &rarr; Token generieren.</span>
-                    </div>
-                    <div class="btn-group">
-                        <button class="btn btn-default btn-sm" id="btnSave">Token speichern</button>
-                        <button class="btn btn-default btn-sm" id="btnTest">Verbindung testen</button>
-                        <span id="savedMsg"></span>
-                    </div>
-                </div>
-            </details>
         </div>
     </div>
 
@@ -275,6 +259,10 @@ label.control-label {
                 <label class="control-label"><input type="checkbox" id="clipClear" checked> Zwischenablage nach 30&nbsp;Sekunden leeren</label>
                 <span class="form-text">Kopierte Passwörter und 2FA-Codes werden nach kurzer Zeit automatisch aus der Zwischenablage entfernt.</span>
             </div>
+            <div class="form-group">
+                <label class="control-label"><input type="checkbox" id="totpAutoCopy" checked> 2FA-Code beim Anmelden bereitlegen</label>
+                <span class="form-text">Nach dem Ausf&uuml;llen eines Eintrags mit 2FA wird beim n&auml;chsten 2FA-Feld &ndash; auch auf einer Folgeseite &ndash; automatisch ein frischer Code in die Zwischenablage gelegt. Einf&uuml;gen gen&uuml;gt dann mit <strong>Strg&nbsp;+&nbsp;V</strong>.</span>
+            </div>
             <div class="btn-group">
                 <button class="btn btn-primary btn-sm" id="btnSaveSec">Speichern</button>
                 <span id="savedSecMsg"></span>
@@ -289,9 +277,9 @@ label.control-label {
         </div>
         <div class="card-body">
             <ul class="steps-list">
-                <li><span class="step-badge">1</span><span>Öffnen Sie den <strong>Passwort-Vault</strong> in Ihrer OpenNIT-Anwendung.</span></li>
-                <li><span class="step-badge">2</span><span>Klicken Sie auf <strong>&bdquo;Extension&ldquo;</strong> in der Toolbar und generieren Sie einen API-Token.</span></li>
-                <li><span class="step-badge">3</span><span>Fügen Sie den Token oben in das Token-Feld ein und klicken Sie auf <strong>Speichern</strong>.</span></li>
+                <li><span class="step-badge">1</span><span>Tragen Sie oben die <strong>Server-URL</strong> Ihrer OpenNIT-Instanz ein (nur <strong>https://</strong>).</span></li>
+                <li><span class="step-badge">2</span><span>Klicken Sie auf <strong>&bdquo;Mit OpenNIT anmelden&ldquo;</strong> und melden Sie sich wie gewohnt an.</span></li>
+                <li><span class="step-badge">3</span><span>Best&auml;tigen Sie den Zugriff auf den <strong>Passwort-Vault</strong> &ndash; die Erweiterung ist damit verbunden.</span></li>
                 <li><span class="step-badge">4</span><span>Fokussieren Sie ein Login-Feld auf einer Website &ndash; Vault-Vorschl&auml;ge erscheinen automatisch.</span></li>
             </ul>
         </div>

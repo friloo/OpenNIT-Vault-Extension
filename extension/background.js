@@ -1,5 +1,7 @@
 'use strict';
 
+importScripts('urlmatch.js');
+
 // ── Cache ──────────────────────────────────────────────────────────────────
 let cachedEntries = null;
 let cacheTime     = 0;
@@ -13,13 +15,13 @@ async function getServerUrl() {
     return c.serverUrl || null;
 }
 
-// ── Zugangstoken beschaffen (SSO-Refresh oder manueller Token) ──────────────
-// Reihenfolge: manueller Token (Erweitert) > SSO-Access-Token (mit Auto-Refresh).
+// ── Zugangstoken beschaffen (SSO) ──────────────────────────────────────────
+// Kurzlebiger Access-Token aus der Session; ist er abgelaufen, wird er über den
+// rotierenden Refresh-Token erneuert.
 async function getAccessToken() {
     const cfg = await new Promise(r => chrome.storage.local.get(
-        ['serverUrl', 'apiToken', 'apiRefreshToken', 'apiRefreshExpiresAt'], r));
+        ['serverUrl', 'apiRefreshToken', 'apiRefreshExpiresAt'], r));
     if (!cfg.serverUrl) return null;
-    if (cfg.apiToken) return cfg.apiToken;               // manueller Token
     if (!cfg.apiRefreshToken) return null;               // nicht angemeldet
     const sess = await chrome.storage.session.get(['accessToken', 'accessExpiresAt']);
     if (sess.accessToken && sess.accessExpiresAt && Date.now() < sess.accessExpiresAt - 30000) {
@@ -100,11 +102,15 @@ async function setUnlockedLocal(dur) {
 }
 async function clearUnlocked() {
     await chrome.storage.session.remove('unlock');
+    await chrome.storage.local.remove('__armedTotp');
+    clearPendingFills();
     cachedEntries = null; cacheTime = 0; faviconCache.clear();
     try { await apiFetch('/api/vault/extension/lock', { method: 'POST' }); } catch (e) { /* ignore */ }
 }
 async function onServerLocked() {
     await chrome.storage.session.remove('unlock');
+    await chrome.storage.local.remove('__armedTotp');
+    clearPendingFills();
     cachedEntries = null; cacheTime = 0;
 }
 async function doUnlock(pin) {
@@ -145,6 +151,67 @@ async function fetchEntries(force = false) {
         }
     } catch (e) { /* ignore */ }
     return { entries: null, locked: false };
+}
+
+/**
+ * Legt einen persönlichen Eintrag im Tresor an.
+ *
+ * Läuft bewusst über `apiFetch`, damit derselbe Zugang wie für alle übrigen
+ * Aufrufe gilt, inklusive automatischer Erneuerung des Access-Tokens.
+ *
+ * @param {{title?:string,username?:string,password?:string,url?:string,notes?:string}} fields
+ * @return {Promise<{ok:boolean,id?:number,locked?:boolean,error?:string}>}
+ */
+async function createEntry(fields) {
+    if (!(await isUnlocked())) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
+    const body = new URLSearchParams();
+    ['title', 'username', 'password', 'url', 'notes'].forEach(k => body.append(k, fields?.[k] ?? ''));
+    return writeEntry('/api/vault/extension/entries', body.toString());
+}
+
+/**
+ * Ändert einen bestehenden Eintrag. Ein leeres Passwortfeld lässt das gespeicherte
+ * Passwort unangetastet; 2FA-Secret und Ordner bleiben serverseitig erhalten.
+ *
+ * @param {number|string} entryId
+ * @param {{title?:string,username?:string,password?:string,url?:string,notes?:string}} fields
+ * @return {Promise<{ok:boolean,locked?:boolean,error?:string}>}
+ */
+async function updateEntry(entryId, fields) {
+    if (!(await isUnlocked())) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
+    const body = new URLSearchParams();
+    ['title', 'username', 'password', 'url', 'notes'].forEach(k => body.append(k, fields?.[k] ?? ''));
+    return writeEntry(`/api/vault/extension/entries/${entryId}`, body.toString());
+}
+
+/**
+ * Löscht einen Eintrag (persönlich oder Team, sofern Schreibrecht besteht).
+ *
+ * @param {number|string} entryId
+ * @return {Promise<{ok:boolean,locked?:boolean,error?:string}>}
+ */
+async function deleteEntry(entryId) {
+    if (!(await isUnlocked())) return { ok: false, locked: true, error: 'Tresor gesperrt.' };
+    return writeEntry(`/api/vault/extension/entries/${entryId}/delete`, '');
+}
+
+// Gemeinsame Auswertung der schreibenden Endpunkte.
+async function writeEntry(path, body) {
+    try {
+        const res = await apiFetch(path, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body,
+        });
+        if (!res) return { ok: false, error: 'Nicht konfiguriert.' };
+        if (res.status === 423) { await onServerLocked(); return { ok: false, locked: true, error: 'Tresor gesperrt.' }; }
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) {
+            cachedEntries = null; cacheTime = 0;
+            return { ok: true, id: data.id };
+        }
+        return { ok: false, error: data.error || 'Fehler beim Speichern.' };
+    } catch (e) { return { ok: false, error: 'Verbindungsfehler.' }; }
 }
 
 async function fetchPassword(entryId) {
@@ -188,21 +255,28 @@ async function fetchFavicon(entryId) {
     } catch (e) { return null; }
 }
 
-function matchUrl(entryUrl, pageUrl) {
-    if (!entryUrl) return false;
-    let pHost;
-    try { pHost = new URL(pageUrl).hostname.replace(/^www\./, ''); } catch { return false; }
-    return String(entryUrl).split('\n').some(line => {
-        const raw = line.trim();
-        if (!raw) return false;
-        try {
-            const eu = raw.includes('://') ? raw : 'https://' + raw;
-            let eHost = new URL(eu).hostname.replace(/^www\./, '');
-            if (eHost.startsWith('*.')) eHost = eHost.slice(2);
-            return pHost === eHost || pHost.endsWith('.' + eHost);
-        } catch { return false; }
-    });
+
+// ── Ausstehendes Ausfüllen (mehrstufiger Login) ─────────────────────────────
+// Bei Logins, die Benutzername und Passwort auf zwei Schritte verteilen, muss das
+// Passwort den Seitenwechsel überdauern. Es bleibt dafür ausschließlich im
+// Speicher des Service Workers – niemals in `chrome.storage`, das auf die
+// Festplatte geschrieben wird. Je Tab ein Auftrag, mit harter Verfallszeit.
+const PENDING_FILL_TTL = 30 * 1000;
+const pendingFills = new Map(); // tabId -> { id, pw, user, ts }
+
+function setPendingFill(tabId, data) {
+    if (tabId == null) return;
+    pendingFills.set(tabId, Object.assign({ ts: Date.now() }, data));
 }
+function takePendingFill(tabId) {
+    if (tabId == null) return null;
+    const p = pendingFills.get(tabId);
+    if (!p) return null;
+    pendingFills.delete(tabId);
+    return (Date.now() - p.ts > PENDING_FILL_TTL) ? null : p;
+}
+function clearPendingFills() { pendingFills.clear(); }
+chrome.tabs.onRemoved.addListener(tabId => pendingFills.delete(tabId));
 
 // ── Zwischenablage automatisch leeren (Offscreen) ───────────────────────────
 async function scheduleClipClear(text) {
@@ -211,19 +285,22 @@ async function scheduleClipClear(text) {
     pendingClip = text || '';
     chrome.alarms.create('clipClear', { delayInMinutes: 0.5 });
 }
-async function clearClipboard() {
+// Schreibt über das Offscreen-Dokument. Dieser Weg funktioniert auch dann, wenn
+// die Seite selbst keinen Zugriff bekommt – etwa ohne frische Nutzerinteraktion.
+async function writeClipboard(text) {
     try {
         if (!chrome.offscreen) return;
         const has = chrome.offscreen.hasDocument ? await chrome.offscreen.hasDocument() : false;
         if (!has) {
             await chrome.offscreen.createDocument({
                 url: 'offscreen.html', reasons: ['CLIPBOARD'],
-                justification: 'Zwischenablage nach dem Kopieren von Zugangsdaten leeren.',
+                justification: 'Zugangsdaten in die Zwischenablage legen und nach kurzer Zeit wieder entfernen.',
             });
         }
-        await chrome.runtime.sendMessage({ target: 'offscreen', type: 'CLIP_WRITE', text: '' });
+        await chrome.runtime.sendMessage({ target: 'offscreen', type: 'CLIP_WRITE', text: text || '' });
     } catch (e) { /* ignore */ }
 }
+async function clearClipboard() { await writeClipboard(''); }
 
 // ── Status prüfen (Bearer) ──────────────────────────────────────────────────
 async function checkStatus() {
@@ -247,11 +324,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === 'GET_MATCHING_ENTRIES') {
         fetchEntries().then(r => {
-            const matched = (r.entries || []).filter(e => matchUrl(e.url, msg.url));
+            const matched = (r.entries || []).filter(e => VaultUrl.matches(e.url, msg.url));
             sendResponse({ entries: matched, locked: r.locked });
         });
         return true;
     }
+    if (msg.type === 'CREATE_ENTRY') { createEntry(msg.entry || {}).then(sendResponse); return true; }
+    if (msg.type === 'UPDATE_ENTRY') { updateEntry(msg.id, msg.entry || {}).then(sendResponse); return true; }
+    if (msg.type === 'DELETE_ENTRY') { deleteEntry(msg.id).then(sendResponse); return true; }
     if (msg.type === 'GET_PASSWORD') { fetchPassword(msg.id).then(password => sendResponse({ password })); return true; }
     if (msg.type === 'GET_TOTP') { fetchTotp(msg.id).then(result => sendResponse(result)); return true; }
     if (msg.type === 'GET_FAVICON') { fetchFavicon(msg.id).then(dataUrl => sendResponse({ dataUrl })); return true; }
@@ -261,9 +341,24 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === 'DO_UNLOCK') { doUnlock(msg.pin || '').then(sendResponse); return true; }
     if (msg.type === 'LOCK_NOW') { clearUnlocked().then(() => sendResponse({ ok: true })); return true; }
+    if (msg.type === 'SET_PENDING_FILL') {
+        setPendingFill(sender.tab?.id, { id: msg.id, pw: msg.pw || '', user: msg.user || '' });
+        sendResponse({ ok: true });
+        return true;
+    }
+    if (msg.type === 'TAKE_PENDING_FILL') { sendResponse({ fill: takePendingFill(sender.tab?.id) }); return true; }
+    if (msg.type === 'CLIP_WRITE') { writeClipboard(msg.text || '').then(() => sendResponse({ ok: true })); return true; }
     if (msg.type === 'SCHEDULE_CLIP_CLEAR') { scheduleClipClear(msg.text || ''); sendResponse({ ok: true }); return true; }
     if (msg.type === 'CHECK_STATUS') { checkStatus().then(sendResponse); return true; }
     if (msg.type === 'CLEAR_CACHE') { cachedEntries = null; cacheTime = 0; faviconCache.clear(); sendResponse({ ok: true }); return true; }
+});
+
+// Der manuell eingetragene API-Token wird nicht mehr unterstützt; ein aus einer
+// früheren Version übernommener Wert wird beim Update aus dem Speicher entfernt.
+// Der manuelle API-Token entfaellt, und ein ausstehender Fuellauftrag liegt nicht
+// mehr im Speicher auf der Platte – Reste frueherer Versionen hier entfernen.
+chrome.runtime.onInstalled.addListener(() => {
+    chrome.storage.local.remove(['apiToken', '__pendingFill']);
 });
 
 // Cache alle 5 Minuten leeren; Zwischenablage-Clear nach Timeout.
