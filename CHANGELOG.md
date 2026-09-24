@@ -5,6 +5,8 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-09-24
+
 ### Hinzugefügt
 - **2FA-Secret in der Erweiterung hinterlegen:** Beim Anlegen und Bearbeiten eines Eintrags gibt es
   ein Feld für das TOTP-Secret. Angenommen wird das Base32-Secret oder der `otpauth://`-Link, den ein
