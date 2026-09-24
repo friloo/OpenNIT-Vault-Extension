@@ -236,6 +236,7 @@ label.control-label {
             </div>
             <span class="form-text">Die Anmeldung erfolgt wie an OpenNIT (lokal + 2FA / Microsoft 365 / Keycloak). Der Zugang wird automatisch erneuert und l&auml;sst sich jederzeit im Vault widerrufen.</span>
             <div id="statusMsg"></div>
+            <div id="serverCompat" style="display:none;margin-top:6px;font-size:12px;"></div>
         </div>
     </div>
 
@@ -264,6 +265,12 @@ label.control-label {
                 <span class="form-text">Nach dem Ausf&uuml;llen eines Eintrags mit 2FA wird beim n&auml;chsten 2FA-Feld &ndash; auch auf einer Folgeseite &ndash; automatisch ein frischer Code in die Zwischenablage gelegt. Einf&uuml;gen gen&uuml;gt dann mit <strong>Strg&nbsp;+&nbsp;V</strong>.</span>
             </div>
             <div class="btn-group">
+                <div class="form-group" style="margin-top:14px;">
+                    <label class="control-label">Tastenkürzel</label>
+                    <div style="font-size:12px;">Anmeldung ausfüllen: <code id="shortcutKey">Strg + Umschalt + L</code>
+                        (bei genau einem passenden Eintrag; sonst öffnet sich das Popup). Ändern unter
+                        <a href="chrome://extensions/shortcuts" id="shortcutLink">chrome://extensions/shortcuts</a>.</div>
+                </div>
                 <button class="btn btn-primary btn-sm" id="btnSaveSec">Speichern</button>
                 <span id="savedSecMsg"></span>
             </div>

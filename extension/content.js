@@ -215,6 +215,7 @@ function init() {
     document.addEventListener('input', onInput, true);
     document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('click', onDocClick, true);
+    document.addEventListener('submit', onSubmitCapture, true);
     window.addEventListener('scroll', repositionDrop, true);
     window.addEventListener('resize', repositionDrop, true);
     chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
@@ -225,6 +226,8 @@ function init() {
         }
     });
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS' }, resp => { if (resp && resp.app_name) appLabel = resp.app_name; });
+    // Nach einem Seitenwechsel liegt ggf. eine erfasste Anmeldung vom vorigen Schritt vor.
+    if (window.top === window) setTimeout(checkCapture, 600);
 }
 
 // Vom Popup angestoßenes Ausfüllen (ohne fokussiertes Feld): bestes
@@ -293,8 +296,26 @@ function onDocClick(e) {
     if (drop && drop.contains(e.target)) return;
     if (e.target === currentField) return;
     hideDrop();
+    // Absenden per Knopf (auch ohne <form>): das Passwortfeld im selben Bereich erfassen.
+    const btn = e.target && e.target.closest ? e.target.closest('button,input[type="submit"],[role="button"]') : null;
+    if (btn && isVisible(btn) && looksLikeSubmit(btn)) {
+        const pw = findPasswordField(btn);
+        if (pw && pw.value) captureFrom(pw);
+    }
+}
+// Nur Knöpfe, die eine Anmeldung/Registrierung absenden – keine „Passwort
+// anzeigen"-Schalter und keine Links.
+const RE_SUBMIT_TXT = /(log ?in|sign ?in|sign ?up|anmeld|einlogg|registr|weiter|next|continue|submit|senden|absenden|konto erstellen|create account|speichern|save|fortfahren)/i;
+const RE_TOGGLE_TXT = /(show|hide|anzeigen|verbergen|toggle|eye|sichtbar|reveal)/i;
+function looksLikeSubmit(btn) {
+    const kind = lc(attr(btn, 'type'));
+    if (btn.tagName === 'A' || kind === 'reset' || kind === 'checkbox' || kind === 'button' && !btn.closest('form')) return false;
+    const txt = (btn.textContent || '') + ' ' + attr(btn, 'aria-label') + ' ' + attr(btn, 'title') + ' ' + attr(btn, 'value');
+    if (RE_TOGGLE_TXT.test(txt)) return false;
+    return kind === 'submit' || RE_SUBMIT_TXT.test(txt);
 }
 function onKeyDown(e) {
+    if (e.key === 'Enter' && e.target && isPasswordField(e.target)) captureFrom(e.target);
     const drop = document.getElementById(DROPDOWN_ID);
     if (!drop) return;
     const items = [...drop.querySelectorAll('.vi')];
@@ -319,7 +340,8 @@ function showSuggestions(field) {
         if (gen !== showGen) return;
         let entries = (resp && resp.entries || []).filter(e => VaultUrl.matches(e.url, location.href));
         if (mode === 'otp') entries = entries.filter(e => e.has_totp);
-        if (!entries.length) { hideDrop(); return; }
+        const cond = mode === 'login' ? window.__onvConditionalPasskey : null;
+        if (!entries.length && !(cond && cond.passkeys && cond.passkeys.length)) { hideDrop(); return; }
         if (document.contains(field) && isVisible(field)) renderDrop(field, entries, mode);
     });
 }
@@ -363,6 +385,31 @@ function renderDrop(field, entries, mode) {
     hd.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg> '
         + esc(appLabel) + (mode === 'otp' ? ' &middot; 2FA' : ' &middot; Vault');
     drop.appendChild(hd);
+
+    // Wartet die Seite auf einen Passkey (Autofill-Variante), stehen die
+    // Passkeys des Tresors für diese Domain oben in der Liste.
+    const cond = mode === 'login' ? window.__onvConditionalPasskey : null;
+    if (cond && cond.passkeys && cond.passkeys.length) {
+        cond.passkeys.forEach(k => {
+            const item = document.createElement('div');
+            item.className = 'vi';
+            Object.assign(item.style, {
+                padding: '9px 13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px',
+                borderBottom: '1px solid #f1f3f5', background: '#fff',
+            });
+            item.innerHTML = '<span style="width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;background:#e0f2fe;color:#0369a1;flex-shrink:0;">'
+                + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg></span>'
+                + '<div style="flex:1;min-width:0;"><div style="font-weight:600;color:#1f2330;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;">' + esc(k.title) + '</div>'
+                + '<div style="color:#0369a1;font-size:11px;font-weight:600;">Mit Passkey anmelden' + (k.user_display || k.user_name ? ' &middot; ' + esc(k.user_display || k.user_name) : '') + '</div></div>'
+                + (k.team_name ? '<span style="font-size:9px;background:#ede9fe;color:#6d28d9;border-radius:5px;padding:1.5px 6px;white-space:nowrap;flex-shrink:0;font-weight:700;">' + esc(k.team_name) + '</span>' : '');
+            item.addEventListener('mouseenter', () => {
+                [...drop.querySelectorAll('.vi')].forEach(i => i.classList.remove('selected'));
+                item.classList.add('selected');
+            });
+            item.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); hideDrop(); cond.choose(k); });
+            drop.appendChild(item);
+        });
+    }
 
     entries.forEach(entry => {
         const item = document.createElement('div');
@@ -605,6 +652,119 @@ const _obs = new MutationObserver(() => {
 try { _obs.observe(document.documentElement, { childList: true, subtree: true }); } catch {}
 // Bei einem Seitenwechsel steht das 2FA-Feld oft schon im ersten Rendering.
 scanForPendingWork();
+
+// ── „Passwort speichern / aktualisieren?" ───────────────────────────────────
+// Beim Absenden einer Anmeldung wandern Benutzername und Passwort in den
+// Hintergrund-Worker (nur im Speicher, je Tab, 90 s). Kurz darauf – auf dieser
+// oder der nächsten Seite – fragt die Seite nach, ob daraus ein Hinweis wird.
+const BANNER_ID = '__vault_capture_banner__';
+let captureSent = 0;
+
+function onSubmitCapture(e) {
+    const form = e.target;
+    if (!form || !form.querySelector) return;
+    const pw = collectInputs(form).find(isPasswordField);
+    if (pw && pw.value) captureFrom(pw);
+}
+function captureFrom(passField) {
+    if (window.top !== window || fillingInProgress) return;
+    const pw = passField.value;
+    if (!pw || Date.now() - captureSent < 1500) return;
+    const userField = findUsernameField(passField);
+    const user = userField ? String(userField.value || '').trim() : '';
+    captureSent = Date.now();
+    chrome.runtime.sendMessage({ type: 'SET_PENDING_CAPTURE', data: {
+        host: location.hostname.replace(/^www\./, '').toLowerCase(), origin: location.origin, url: location.href, user, pw,
+    } }, () => { void chrome.runtime.lastError; });
+    // Bleibt die Seite (SPA), erscheint der Hinweis hier; sonst auf der Folgeseite.
+    setTimeout(checkCapture, 1200);
+}
+function checkCapture() {
+    if (document.getElementById(BANNER_ID)) return;
+    chrome.runtime.sendMessage({ type: 'TAKE_PENDING_CAPTURE' }, resp => {
+        if (chrome.runtime.lastError) return;
+        const c = resp && resp.capture;
+        if (c) showCaptureBanner(c);
+    });
+}
+function decideCapture(decision, done) {
+    chrome.runtime.sendMessage({ type: 'CAPTURE_DECISION', decision }, r => { if (done) done(chrome.runtime.lastError ? null : r); });
+}
+function showCaptureBanner(c) {
+    const old = document.getElementById(BANNER_ID);
+    if (old) old.remove();
+    const host = document.createElement('div');
+    host.id = BANNER_ID;
+    const root = host.attachShadow({ mode: 'closed' });
+    const style = document.createElement('style');
+    style.textContent = ':host{all:initial}'
+        + '.b{position:fixed;top:16px;right:16px;width:340px;max-width:calc(100vw - 32px);background:#fff;border-radius:14px;box-shadow:0 14px 40px rgba(31,35,48,.28);z-index:2147483647;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:#1f2330}'
+        + '.hd{padding:9px 13px;background:linear-gradient(135deg,#4f46e5 0%,#5b6ee8 45%,#3c8dbc 100%);color:#fff;font-weight:700;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:7px}'
+        + '.bd{padding:12px 13px 11px}.t{font-weight:700;font-size:13.5px;margin-bottom:3px}.s{color:#5b6478;font-size:12px;margin-bottom:8px;line-height:1.45}'
+        + 'select{width:100%;box-sizing:border-box;padding:7px 9px;border:1.5px solid #e3e6ef;border-radius:9px;font:inherit;font-size:12px;background:#fff;color:#1f2330;margin-bottom:8px}'
+        + '.row{display:flex;gap:6px}button{flex:1;padding:8px 6px;border-radius:9px;border:1.5px solid #e3e6ef;background:#fff;font:inherit;font-size:11.5px;font-weight:600;color:#5b6478;cursor:pointer;white-space:nowrap}'
+        + 'button:hover{background:#f5f6fb}button.p{background:#4f46e5;border-color:#4f46e5;color:#fff}button.p:hover{background:#4338ca}.m{font-size:11px;color:#dc3545;min-height:13px;margin-top:5px}';
+    root.appendChild(style);
+    const box = document.createElement('div');
+    box.className = 'b';
+    const isUpdate = c.kind === 'update';
+    let html = '<div class="hd"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>' + esc(appLabel) + '</div><div class="bd">';
+    if (isUpdate) {
+        html += '<div class="t">Passwort aktualisieren?</div><div class="s">Für <b>' + esc(c.entry.title) + '</b>' + (c.user ? ' (' + esc(c.user) + ')' : '') + ' wurde ein anderes Passwort verwendet als gespeichert.</div>';
+    } else {
+        html += '<div class="t">Passwort speichern?</div><div class="s">Anmeldung bei <b>' + esc(c.host) + '</b>' + (c.user ? ' als <b>' + esc(c.user) + '</b>' : '') + ' im Tresor ablegen.</div>';
+        if (c.targets) {
+            html += '<select class="target"><option value="p:0">Persönlich</option>';
+            (c.targets.personal && c.targets.personal.folders || []).forEach(f => { html += '<option value="p:' + esc(f.id) + '">Persönlich / ' + esc(f.name) + '</option>'; });
+            (c.targets.teams || []).forEach(t => {
+                if (!t.can_write) return;
+                html += '<option value="t:' + esc(t.id) + ':0">Team ' + esc(t.name) + '</option>';
+                (t.folders || []).forEach(f => { html += '<option value="t:' + esc(t.id) + ':' + esc(f.id) + '">Team ' + esc(t.name) + ' / ' + esc(f.name) + '</option>'; });
+            });
+            html += '</select>';
+        }
+    }
+    html += '<div class="row"><button class="never">Nie für diese Seite</button><button class="later">Nicht jetzt</button><button class="p ok">' + (isUpdate ? 'Aktualisieren' : 'Speichern') + '</button></div><div class="m"></div></div>';
+    box.innerHTML = html;
+    root.appendChild(box);
+    document.documentElement.appendChild(host);
+
+    const msg = box.querySelector('.m');
+    box.querySelector('.later').addEventListener('click', () => { decideCapture({ action: 'dismiss' }); host.remove(); });
+    box.querySelector('.never').addEventListener('click', () => { decideCapture({ action: 'never' }); host.remove(); });
+    box.querySelector('.ok').addEventListener('click', () => {
+        const btn = box.querySelector('.ok');
+        btn.disabled = true;
+        let decision;
+        if (isUpdate) {
+            decision = { action: 'update', entryId: c.entry.id };
+        } else {
+            decision = { action: 'save' };
+            const sel = box.querySelector('.target');
+            if (sel) {
+                const tv = String(sel.value || 'p:0').split(':');
+                if (tv[0] === 't') { decision.team_id = tv[1]; decision.folder_id = tv[2]; } else { decision.folder_id = tv[1]; }
+            }
+        }
+        decideCapture(decision, r => {
+            if (r && r.ok) { host.remove(); showToastNotice(isUpdate ? 'Passwort aktualisiert' : 'Eintrag gespeichert'); return; }
+            btn.disabled = false;
+            msg.textContent = (r && r.error) || 'Speichern fehlgeschlagen.';
+        });
+    });
+    setTimeout(() => { if (host.isConnected) { decideCapture({ action: 'dismiss' }); host.remove(); } }, 60000);
+}
+function showToastNotice(text) {
+    const n = document.createElement('div');
+    Object.assign(n.style, {
+        position: 'fixed', bottom: '18px', right: '18px', background: '#212529', color: '#fff', padding: '9px 13px',
+        borderRadius: '8px', fontSize: '12px', fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',
+        zIndex: '2147483647', boxShadow: '0 4px 16px rgba(0,0,0,.35)',
+    });
+    n.textContent = text;
+    document.documentElement.appendChild(n);
+    setTimeout(() => n.remove(), 2200);
+}
 
 // ── TOTP-Benachrichtigung (unten rechts) ────────────────────────────────────
 const TOTP_PERIOD = 30; // Sekunden pro Code (RFC 6238, Serverseite nutzt denselben Wert)

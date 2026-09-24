@@ -6,6 +6,11 @@ let entryIndex  = {};      // id -> entry
 let detailState = null;    // aktiver Eintrag im Detail-Panel
 let selIndex    = -1;      // Tastatur-Auswahl in der Liste
 let editingId   = null;    // gesetzt, solange das Panel einen bestehenden Eintrag bearbeitet
+let serverApi   = 0;       // Stand der Server-Schnittstelle (aus /status); neue Funktionen ab 2
+let healthMap   = null;    // id -> { weak, reused } aus /entries/health
+let targets     = null;    // Ziele (Ordner/Teams) für das Anlegen
+let editFolder  = null;    // Ordner des bearbeiteten Eintrags beim Öffnen (Änderung erkennen)
+const API_FEATURES = 2;
 
 function $(id) { return document.getElementById(id); }
 
@@ -50,6 +55,7 @@ async function init() {
 function boot() {
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS' }, resp => {
         if (resp?.ok) {
+            serverApi = Number(resp.api_version || 0);
             $('hdTitle').textContent = 'OpenNIT Vault';
             // Untertitel: angemeldeter Nutzer und – zur Orientierung – die Instanz.
             const parts = [];
@@ -109,7 +115,7 @@ function lockNow() {
     chrome.runtime.sendMessage({ type: 'LOCK_NOW' }, () => showLockScreen());
 }
 
-function reload(force) {
+function reload(force, afterLoad) {
     closeDetailTimers();
     detailState = null;
     selIndex = -1;
@@ -130,6 +136,7 @@ function reload(force) {
             return;
         }
         indexEntries(allEntries);
+        loadHealth();
         chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
             const url = tabs[0]?.url;
             if (url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://')) {
@@ -137,13 +144,71 @@ function reload(force) {
                     pageMatches = r2?.entries || [];
                     indexEntries(pageMatches);
                     renderDefault();
+                    if (afterLoad) afterLoad();
                 });
             } else {
                 pageMatches = [];
                 renderDefault();
+                if (afterLoad) afterLoad();
             }
         });
     });
+}
+
+// Passwort-Gesundheit (schwach / mehrfach) kommt vom Server ohne Passwörter;
+// die Marker werden nachträglich in die bereits gezeichnete Liste gesetzt.
+function loadHealth() {
+    if (serverApi < API_FEATURES) return;
+    chrome.runtime.sendMessage({ type: 'GET_HEALTH' }, r => {
+        if (!r?.ok) return;
+        healthMap = r.entries || {};
+        document.querySelectorAll('#eList .entry').forEach(row => {
+            const t = row.querySelector('.entry-title');
+            if (t && !t.querySelector('.entry-warn')) t.insertAdjacentHTML('beforeend', healthBadges(row.dataset.id));
+        });
+    });
+}
+function healthBadges(id) {
+    const h = healthMap && healthMap[String(id)];
+    if (!h) return '';
+    return (h.weak ? '<span class="entry-warn" title="Schwaches Passwort">schwach</span>' : '')
+         + (h.reused > 1 ? '<span class="entry-warn reused" title="Passwort wird ' + h.reused + '-mal verwendet">mehrfach</span>' : '');
+}
+
+// Ziele (persönlich/Ordner/Team) für das Anlegen; Wert: p:<folder> oder t:<team>:<folder>.
+function loadTargets(cb) {
+    if (serverApi < API_FEATURES) { targets = null; cb(); return; }
+    if (targets) { cb(); return; }
+    chrome.runtime.sendMessage({ type: 'GET_TARGETS' }, r => { targets = r?.ok ? r : null; cb(); });
+}
+function fillTargetSelect(mode, entry) {
+    const sel = $('neTarget');
+    sel.innerHTML = '';
+    sel.style.display = 'none';
+    if (!targets) return;
+    const opt = (v, label) => { const o = document.createElement('option'); o.value = v; o.textContent = label; sel.appendChild(o); };
+    if (mode === 'new') {
+        opt('p:0', 'Ablegen in: Persönlich');
+        (targets.personal?.folders || []).forEach(f => opt('p:' + f.id, 'Persönlich / ' + f.name));
+        (targets.teams || []).forEach(t => {
+            if (!t.can_write) return;
+            opt('t:' + t.id + ':0', 'Team ' + t.name);
+            (t.folders || []).forEach(f => opt('t:' + t.id + ':' + f.id, 'Team ' + t.name + ' / ' + f.name));
+        });
+        sel.value = 'p:0';
+        sel.style.display = '';
+        return;
+    }
+    // Bearbeiten: nur der Ordner innerhalb des bestehenden Kontexts ist wählbar.
+    const team = entry.team_id ? (targets.teams || []).find(t => String(t.id) === String(entry.team_id)) : null;
+    const folders = entry.team_id ? (team?.folders || []) : (targets.personal?.folders || []);
+    if (!folders.length) return;
+    const base = entry.team_id ? 'Team ' + (team?.name || entry.team_name || '') : 'Persönlich';
+    opt('0', 'Ordner: keiner (' + base + ')');
+    folders.forEach(f => opt(String(f.id), base + ' / ' + f.name));
+    sel.value = entry.folder_id ? String(entry.folder_id) : '0';
+    if (sel.value !== (entry.folder_id ? String(entry.folder_id) : '0')) sel.value = '0';
+    sel.style.display = '';
 }
 
 function indexEntries(list) {
@@ -228,6 +293,8 @@ function openNewPanel() {
     $('neNotes').value = '';
     $('newEntryMsg').textContent = '';
     resetTotpFields(false);
+    editFolder = null;
+    loadTargets(() => fillTargetSelect('new'));
     chrome.tabs.query({ active: true, currentWindow: true }, tabs => {
         const url = tabs[0]?.url;
         if (url && !url.startsWith('chrome://') && !url.startsWith('chrome-extension://')) {
@@ -332,6 +399,8 @@ function openEditPanel() {
     $('neNotes').value    = e.notes || '';
     $('newEntryMsg').textContent = '';
     resetTotpFields(!!e.has_totp);
+    editFolder = e.folder_id ? String(e.folder_id) : '0';
+    loadTargets(() => fillTargetSelect('edit', e));
 
     $('listWrap').style.display = 'none';
     $('search').closest('.search-wrap').style.display = 'none';
@@ -380,17 +449,36 @@ function saveNewEntry() {
         totp:     totp,
         totp_clear: !!(editingId && $('neTotpClear').checked),
     };
+    const sel = $('neTarget');
+    if (sel.style.display !== 'none' && sel.value) {
+        if (editingId) {
+            if (sel.value !== editFolder) entry.folder_id = sel.value === '0' ? '' : sel.value;
+        } else {
+            const tv = sel.value.split(':');
+            if (tv[0] === 't') { entry.team_id = tv[1]; entry.folder_id = tv[2] !== '0' ? tv[2] : ''; }
+            else entry.folder_id = tv[1] !== '0' ? tv[1] : '';
+        }
+    }
     const msg = editingId
         ? { type: 'UPDATE_ENTRY', id: editingId, entry }
         : { type: 'CREATE_ENTRY', entry };
     const wasEditing = !!editingId;
+    const sentTotp = !!totp;
 
     chrome.runtime.sendMessage(msg, resp => {
         $('btnSaveNew').disabled = false;
         $('btnSaveNew').textContent = 'Speichern';
         if (resp?.ok) {
+            const savedId = String(wasEditing ? editingId : (resp.id ?? ''));
             closeNewPanel();
-            reload(true);
+            reload(true, () => {
+                // Ein älterer Server verwirft ein gesendetes 2FA-Secret stillschweigend –
+                // das sieht man nur daran, dass der Eintrag danach kein 2FA trägt.
+                const saved = entryIndex[savedId];
+                if (sentTotp && saved && !saved.has_totp) {
+                    showToast('Gespeichert – aber der Server hat das 2FA-Secret nicht übernommen (Server-Update nötig)', 6000);
+                }
+            });
             showToast(wasEditing ? 'Eintrag aktualisiert' : 'Eintrag gespeichert');
             return;
         }
@@ -412,7 +500,7 @@ function entryHtml(e) {
     const userText = esc(e.username) || '<span style="color:#adb5bd;font-style:italic">Kein Benutzername</span>';
     const m = monogram(e.title);
     const icon = `<span class="entry-mono" style="display:inline-flex;width:20px;height:20px;border-radius:4px;align-items:center;justify-content:center;font-size:11px;font-weight:700;background:hsl(${m.hue},52%,90%);color:hsl(${m.hue},55%,38%);">${m.ch}</span>`;
-    const totpBadge = e.has_totp ? '<span class="entry-2fa">2FA</span>' : '';
+    const totpBadge = (e.has_totp ? '<span class="entry-2fa">2FA</span>' : '') + healthBadges(e.id);
     return `
         <div class="entry" data-id="${e.id}" data-domain="${escAttr(e.favicon_domain)}">
             <div class="entry-icon">${icon}</div>
@@ -532,6 +620,37 @@ function openDetail(id) {
         $('fieldTotp').style.display = 'none';
     }
 
+    // Gesundheit
+    const h = healthMap && healthMap[String(id)];
+    const hParts = [];
+    if (h?.weak) hParts.push('Schwaches Passwort');
+    if (h?.reused > 1) hParts.push('Passwort wird ' + h.reused + '-mal verwendet');
+    $('detailHealth').textContent = hParts.length ? '⚠ ' + hParts.join(' · ') : '';
+    $('detailHealth').style.display = hParts.length ? '' : 'none';
+
+    // Ablaufdatum
+    renderExpires(e.expires_at);
+
+    // Zusatzfelder (Inhalte erst auf Abruf – geheime Felder werden protokolliert)
+    const ff = $('fieldFields');
+    if (serverApi >= API_FEATURES && e.field_count > 0) {
+        ff.style.display = '';
+        $('detailFields').innerHTML = '<button class="link-btn" id="btnLoadFields">' + e.field_count + ' Zusatzfeld' + (e.field_count > 1 ? 'er' : '') + ' anzeigen</button>';
+        $('btnLoadFields').addEventListener('click', () => loadDetailFields(String(id)));
+    } else {
+        ff.style.display = 'none';
+    }
+
+    // Passkeys
+    const fp = $('fieldPasskeys');
+    if (serverApi >= API_FEATURES && e.passkey_count > 0) {
+        fp.style.display = '';
+        $('detailPasskeys').innerHTML = '<span class="pk-meta">…</span>';
+        loadDetailPasskeys(String(id), e.can_write !== false);
+    } else {
+        fp.style.display = 'none';
+    }
+
     // Bearbeiten/Löschen nur mit Schreibrecht (Team-Rolle „Betrachter" liest nur).
     // Ältere Server liefern kein can_write – dann bleiben die Aktionen sichtbar.
     const writable = e.can_write !== false;
@@ -545,6 +664,76 @@ function closeDetail() {
     $('detailPanel').style.display = 'none';
     $('listWrap').style.display = '';
     $('search').closest('.search-wrap').style.display = '';
+}
+
+function renderExpires(raw) {
+    const box = $('fieldExpires');
+    const el  = $('detailExpires');
+    if (!raw) { box.style.display = 'none'; return; }
+    const d = new Date(String(raw).replace(' ', 'T'));
+    if (isNaN(d.getTime())) { box.style.display = 'none'; return; }
+    const days = Math.ceil((d.getTime() - Date.now()) / 86400000);
+    el.className = 'detail-expires' + (days < 0 ? ' over' : days <= 14 ? ' soon' : '');
+    el.textContent = d.toLocaleDateString('de-DE') + (days < 0 ? ' – abgelaufen' : days === 0 ? ' – heute' : days <= 14 ? ' – in ' + days + ' Tag' + (days > 1 ? 'en' : '') : '');
+    box.style.display = '';
+}
+
+function loadDetailFields(id) {
+    const host = $('detailFields');
+    host.innerHTML = '<span class="pk-meta">…</span>';
+    chrome.runtime.sendMessage({ type: 'GET_FIELDS', id }, r => {
+        if (!detailState || detailState.id !== id) return;
+        if (r?.locked) { showLockScreen(); return; }
+        if (!r?.ok) { host.innerHTML = '<span class="pk-meta">' + esc(r?.error || 'Nicht verfügbar') + '</span>'; return; }
+        host.innerHTML = '';
+        (r.fields || []).forEach((f, i) => {
+            const row = document.createElement('div');
+            row.className = 'fl-row';
+            const shown = f.is_secret ? '•'.repeat(Math.min(String(f.value).length || 6, 12)) : f.value;
+            row.innerHTML = '<span class="fl-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>'
+                + '<span class="fl-val' + (f.is_secret ? ' mono' : '') + '" id="flv' + i + '">' + esc(shown) + '</span>'
+                + (f.is_secret ? '<button class="field-btn" title="Anzeigen/Verbergen" data-act="reveal"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg></button>' : '')
+                + '<button class="field-btn" title="Kopieren" data-act="copy"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></button>';
+            let revealed = false;
+            row.querySelector('[data-act="reveal"]')?.addEventListener('click', () => {
+                revealed = !revealed;
+                row.querySelector('#flv' + i).textContent = revealed ? f.value : shown;
+            });
+            row.querySelector('[data-act="copy"]').addEventListener('click', () => {
+                if (f.is_secret) copySecret(f.value, 'Kopiert'); else copyToClipboard(f.value, 'Kopiert');
+            });
+            host.appendChild(row);
+        });
+        if (!host.children.length) host.innerHTML = '<span class="pk-meta">Keine Zusatzfelder.</span>';
+    });
+}
+
+function loadDetailPasskeys(id, writable) {
+    const host = $('detailPasskeys');
+    chrome.runtime.sendMessage({ type: 'GET_ENTRY_PASSKEYS', id }, r => {
+        if (!detailState || detailState.id !== id) return;
+        if (r?.locked) { showLockScreen(); return; }
+        if (!r?.ok) { host.innerHTML = '<span class="pk-meta">' + esc(r?.error || 'Nicht verfügbar') + '</span>'; return; }
+        host.innerHTML = '';
+        (r.passkeys || []).forEach(k => {
+            const row = document.createElement('div');
+            row.className = 'pk-row';
+            const who = k.user_display || k.user_name || '';
+            const used = k.last_used_at ? 'zuletzt ' + String(k.last_used_at).slice(0, 10) : 'noch nicht verwendet';
+            row.innerHTML = '<span class="pk-info" title="' + escAttr(k.rp_id + (who ? ' · ' + who : '')) + '">🔑 ' + esc(k.rp_id) + (who ? ' <span class="pk-meta">' + esc(who) + '</span>' : '') + '</span>'
+                + '<span class="pk-meta">' + esc(used) + '</span>'
+                + (writable ? '<button class="field-btn" title="Passkey löschen" data-act="del"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg></button>' : '');
+            row.querySelector('[data-act="del"]')?.addEventListener('click', () => {
+                if (!window.confirm('Passkey für „' + k.rp_id + '" löschen? Die Anmeldung damit ist danach nicht mehr möglich.')) return;
+                chrome.runtime.sendMessage({ type: 'PASSKEY_DELETE', id: k.id }, d => {
+                    if (d?.ok) { row.remove(); showToast('Passkey gelöscht'); if (!host.children.length) host.innerHTML = '<span class="pk-meta">Keine Passkeys.</span>'; }
+                    else showToast(d?.error || 'Löschen fehlgeschlagen');
+                });
+            });
+            host.appendChild(row);
+        });
+        if (!host.children.length) host.innerHTML = '<span class="pk-meta">Keine Passkeys.</span>';
+    });
 }
 
 async function ensurePassword(id) {
@@ -692,11 +881,13 @@ function copySecret(text, msg) {
         chrome.runtime.sendMessage({ type: 'SCHEDULE_CLIP_CLEAR', text });
     }).catch(() => showToast('Fehler'));
 }
-function showToast(msg) {
+let toastTimer = null;
+function showToast(msg, ms) {
     const t = $('toast');
     t.textContent = msg;
     t.classList.add('show');
-    setTimeout(() => t.classList.remove('show'), 1800);
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => t.classList.remove('show'), ms || 1800);
 }
 function esc(s)     { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function escAttr(s) { return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
