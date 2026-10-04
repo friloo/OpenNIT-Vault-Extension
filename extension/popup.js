@@ -10,6 +10,7 @@ let serverApi   = 0;       // Stand der Server-Schnittstelle (aus /status); neue
 let healthMap   = null;    // id -> { weak, reused } aus /entries/health
 let targets     = null;    // Ziele (Ordner/Teams) für das Anlegen
 let editFolder  = null;    // Ordner des bearbeiteten Eintrags beim Öffnen (Änderung erkennen)
+let deviceKeys  = 0;       // registrierte Geräteschlüssel (Entsperren ohne PIN)
 const API_FEATURES = 2;
 
 function $(id) { return document.getElementById(id); }
@@ -41,6 +42,11 @@ async function init() {
     $('btnCopyNotes').addEventListener('click', () => copySecret($('detailNotes').dataset.value || '', 'Notiz kopiert'));
     $('btnDetailFill').addEventListener('click', fillActiveTab);
     $('btnDetailEdit').addEventListener('click', openEditPanel);
+    $('btnDetailFav').addEventListener('click', toggleDetailFavorite);
+    $('lockDevice').addEventListener('click', () => {
+        // WebAuthn braucht ein eigenes Fenster; das Popup schließt sich dabei.
+        chrome.runtime.sendMessage({ type: 'OPEN_UNLOCK_WINDOW' }, () => window.close());
+    });
     $('btnDetailDelete').addEventListener('click', deleteCurrentEntry);
 
     // Lock-Screen
@@ -56,6 +62,7 @@ function boot() {
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS' }, resp => {
         if (resp?.ok) {
             serverApi = Number(resp.api_version || 0);
+            deviceKeys = Number(resp.device_keys || 0);
             $('hdTitle').textContent = 'OpenNIT Vault';
             // Untertitel: angemeldeter Nutzer und – zur Orientierung – die Instanz.
             const parts = [];
@@ -84,6 +91,7 @@ function showLockScreen() {
     $('search').closest('.search-wrap').style.display = 'none';
     $('lockMsg').textContent = '';
     $('lockPin').value = '';
+    $('lockDevice').style.display = (deviceKeys > 0 && serverApi >= 3) ? '' : 'none';
     setTimeout(() => $('lockPin').focus(), 50);
 }
 function hideLockScreen() {
@@ -222,11 +230,17 @@ function renderDefault() {
             '<div class="section-lbl match">Passend f&uuml;r diese Seite</div>' +
             '<div class="entries" id="eList">' + pageMatches.map(e => entryHtml(e)).join('') + '</div>';
     } else {
-        $('listWrap').innerHTML =
-            '<div class="section-lbl">Alle Eintr&auml;ge (' + allEntries.length + ')</div>' +
-            '<div class="entries scrollable" id="eList">' +
-            (allEntries.length ? allEntries.map(e => entryHtml(e)).join('') : '<div class="empty">Noch keine Eintr&auml;ge vorhanden.</div>') +
-            '</div>';
+        // Ohne Treffer für die Seite: Favoriten und zuletzt verwendete Einträge
+        // vor der Gesamtliste (eine Liste für die Tastaturnavigation).
+        const favs   = allEntries.filter(e => e.favorite);
+        const recent = allEntries.filter(e => e.last_used_at && !e.favorite)
+            .sort((a, b) => String(b.last_used_at).localeCompare(String(a.last_used_at))).slice(0, 5);
+        let html = '';
+        if (favs.length)   html += '<div class="section-lbl">Favoriten</div>' + favs.map(e => entryHtml(e)).join('');
+        if (recent.length) html += '<div class="section-lbl">Zuletzt verwendet</div>' + recent.map(e => entryHtml(e)).join('');
+        html += '<div class="section-lbl">Alle Eintr&auml;ge (' + allEntries.length + ')</div>' +
+            (allEntries.length ? allEntries.map(e => entryHtml(e)).join('') : '<div class="empty">Noch keine Eintr&auml;ge vorhanden.</div>');
+        $('listWrap').innerHTML = '<div class="entries scrollable" id="eList">' + html + '</div>';
     }
     const el = document.getElementById('eList');
     if (el) attachHandlers(el);
@@ -342,40 +356,9 @@ function normalizeTotpSecret(input) {
     return /^[A-Z2-7]+$/.test(s) ? s : null;
 }
 
-// Gleichverteilte Zufallszahl aus [0, max) – verwirft die Werte des obersten,
-// unvollständigen Blocks, damit kein Rest-Modulo einzelne Zeichen bevorzugt.
-function randomBelow(max) {
-    const limit = Math.floor(0x100000000 / max) * max;
-    const buf = new Uint32Array(1);
-    do { crypto.getRandomValues(buf); } while (buf[0] >= limit);
-    return buf[0] % max;
-}
-
-/** Zeichensätze ohne optisch verwechselbare Zeichen (l/I/1, O/0). */
-const GEN_SETS = [
-    'abcdefghijkmnopqrstuvwxyz',
-    'ABCDEFGHJKLMNPQRSTUVWXYZ',
-    '23456789',
-];
-const GEN_SYMBOLS = '!@#$%^&*()-_=+[]{}';
-
+// Generator aus generator.js (gemeinsam mit der Vorschlagsliste auf der Seite).
 function generatePassword() {
-    const len  = Math.max(8, parseInt($('genLen').value, 10) || 20);
-    const sets = $('genSymbols').checked ? GEN_SETS.concat(GEN_SYMBOLS) : GEN_SETS.slice();
-    const all  = sets.join('');
-
-    // Je Satz ein Zeichen garantieren, den Rest frei ziehen …
-    const out = sets.map(s => s[randomBelow(s.length)]);
-    while (out.length < len) out.push(all[randomBelow(all.length)]);
-
-    // … und danach mischen, damit die garantierten Zeichen nicht vorne stehen.
-    // Der Zufall dafür wird frisch gezogen und nicht aus der Zeichenwahl wiederverwendet.
-    for (let i = out.length - 1; i > 0; i--) {
-        const j = randomBelow(i + 1);
-        [out[i], out[j]] = [out[j], out[i]];
-    }
-
-    $('nePassword').value = out.join('');
+    $('nePassword').value = VaultGen.generate(parseInt($('genLen').value, 10) || VaultGen.DEFAULT_LENGTH, $('genSymbols').checked);
     $('nePassword').type = 'text';
 }
 
@@ -505,7 +488,7 @@ function entryHtml(e) {
         <div class="entry" data-id="${e.id}" data-domain="${escAttr(e.favicon_domain)}">
             <div class="entry-icon">${icon}</div>
             <div class="entry-info">
-                <div class="entry-title">${esc(e.title)}${totpBadge}</div>
+                <div class="entry-title">${e.favorite ? '<span class="entry-fav">&#9733;</span>' : ''}${esc(e.title)}${totpBadge}</div>
                 <div class="entry-user">${userText}</div>
                 <div class="entry-meta">
                     <div class="entry-url">${esc(e.url) || ''}</div>
@@ -620,6 +603,11 @@ function openDetail(id) {
         $('fieldTotp').style.display = 'none';
     }
 
+    // Favorit (Server ≥ 3)
+    const favBtn = $('btnDetailFav');
+    favBtn.style.display = serverApi >= 3 ? '' : 'none';
+    setFavButton(!!e.favorite);
+
     // Gesundheit
     const h = healthMap && healthMap[String(id)];
     const hParts = [];
@@ -664,6 +652,27 @@ function closeDetail() {
     $('detailPanel').style.display = 'none';
     $('listWrap').style.display = '';
     $('search').closest('.search-wrap').style.display = '';
+}
+
+function setFavButton(on) {
+    const b = $('btnDetailFav');
+    b.classList.toggle('on', on);
+    b.innerHTML = on ? '&#9733;' : '&#9734;';
+    b.title = on ? 'Favorit entfernen' : 'Als Favorit markieren';
+}
+function toggleDetailFavorite() {
+    if (!detailState) return;
+    const id = detailState.id;
+    chrome.runtime.sendMessage({ type: 'TOGGLE_FAVORITE', id }, r => {
+        if (!detailState || detailState.id !== id) return;
+        if (r?.locked) { showLockScreen(); return; }
+        if (!r?.ok) { showToast(r?.error || 'Nicht möglich'); return; }
+        const e = entryIndex[id];
+        if (e) e.favorite = !!r.favorite;
+        (allEntries || []).forEach(x => { if (String(x.id) === id) x.favorite = !!r.favorite; });
+        setFavButton(!!r.favorite);
+        showToast(r.favorite ? 'Als Favorit markiert' : 'Favorit entfernt');
+    });
 }
 
 function renderExpires(raw) {

@@ -100,8 +100,10 @@ async function isUnlocked() {
 async function setUnlockedLocal(dur) {
     const unlock = (String(dur) === 'session') ? { sticky: true } : { until: Date.now() + durationSecs(dur) * 1000 };
     await chrome.storage.session.set({ unlock });
+    setTimeout(refreshMenuForActiveTab, 50);
 }
 async function clearUnlocked() {
+    setTimeout(refreshMenuForActiveTab, 50);
     await chrome.storage.session.remove('unlock');
     await chrome.storage.local.remove('__armedTotp');
     clearPendingFills();
@@ -130,6 +132,26 @@ async function doUnlock(pin) {
         const data = await res.json().catch(() => ({}));
         if (data.ok) { await setUnlockedLocal(dur); return { ok: true }; }
         return { ok: false, error: data.error || 'PIN falsch.', lockSecs: data.lock_secs || 0 };
+    } catch (e) { return { ok: false, error: 'Verbindungsfehler.' }; }
+}
+
+// Geräte-Entsperrung (WebAuthn in unlock.html): Challenge holen, Antwort einreichen.
+async function unlockDeviceBegin() {
+    try {
+        const res = await apiFetch('/api/vault/extension/unlock/device/begin', postOpts(''));
+        if (!res) return { ok: false, error: 'Nicht konfiguriert.' };
+        return await res.json().catch(() => ({ ok: false, error: 'Antwort unlesbar.' }));
+    } catch (e) { return { ok: false, error: 'Verbindungsfehler.' }; }
+}
+async function unlockDevice(assertion) {
+    const s = await lockSettings();
+    const dur = s.lockDuration || '15';
+    try {
+        const res = await apiFetch('/api/vault/extension/unlock/device', postOpts(formBody(Object.assign({}, assertion || {}, { duration_secs: durationSecs(dur) }))));
+        if (!res) return { ok: false, error: 'Nicht konfiguriert.' };
+        const data = await res.json().catch(() => ({}));
+        if (data.ok) { await setUnlockedLocal(dur); openPopupSafe(); return { ok: true }; }
+        return { ok: false, error: data.error || 'Entsperrung fehlgeschlagen.' };
     } catch (e) { return { ok: false, error: 'Verbindungsfehler.' }; }
 }
 
@@ -319,14 +341,17 @@ async function evaluateCapture(tabId) {
     const r = await fetchEntries();
     if (!r.entries) return drop();
 
-    const matches  = r.entries.filter(e => VaultUrl.matches(e.url, c.url));
-    const sameUser = matches.filter(e => String(e.username || '').toLowerCase() === String(c.user || '').toLowerCase());
-    if (sameUser.length) {
-        // Unverändertes Passwort → kein Hinweis. Prüfbar nur mit Server ≥ 2.
-        if ((await apiVersion()) < 2) return drop();
+    const matches = r.entries.filter(e => VaultUrl.matches(e.url, c.url));
+    if (matches.length) {
+        // Für diese Seite gibt es bereits einen Zugang im Tresor – „Speichern" wird
+        // dann nie vorgeschlagen. Einzig ein geändertes Passwort zum selben
+        // Benutzernamen führt zu „Aktualisieren"; das ist nur mit Server ≥ 2 prüfbar.
+        const user = String(c.user || '').trim().toLowerCase();
+        const sameUser = user ? matches.filter(e => String(e.username || '').trim().toLowerCase() === user) : [];
+        if (!sameUser.length || (await apiVersion()) < 2) return drop();
         for (const e of sameUser) {
             const chk = await apiCall(`/api/vault/extension/entries/${e.id}/password/check`, postOpts(formBody({ password: c.pw })));
-            if (chk.ok && chk.match) return drop();
+            if (!chk.ok || chk.match) return drop();
         }
         const target = sameUser.find(e => e.can_write !== false);
         if (!target) return drop();
@@ -353,6 +378,89 @@ async function decideCapture(tabId, d) {
     return { ok: false, error: 'Unbekannte Aktion.' };
 }
 chrome.tabs.onRemoved.addListener(tabId => pendingCaptures.delete(tabId));
+
+// ── Kontextmenü: Benutzername / Passwort / 2FA-Code in das Feld einfügen ──────
+// Die Untermenüs folgen dem aktiven Tab: je passendem Eintrag ein Zweig.
+const MENU_ROOT = 'onv-root';
+let menuTabUrl = null;
+function menuRemoveAll() {
+    return new Promise(r => { try { chrome.contextMenus.removeAll(() => { void chrome.runtime.lastError; r(); }); } catch (e) { r(); } });
+}
+function menuCreate(props) {
+    try { chrome.contextMenus.create(props, () => { void chrome.runtime.lastError; }); } catch (e) { /* ignore */ }
+}
+async function rebuildContextMenu(tabUrl) {
+    if (!chrome.contextMenus) return;
+    menuTabUrl = tabUrl || null;
+    await menuRemoveAll();
+    menuCreate({ id: MENU_ROOT, title: 'OpenNIT Vault', contexts: ['editable'] });
+    if (!tabUrl || !/^https?:/i.test(tabUrl)) {
+        menuCreate({ id: 'onv-none', parentId: MENU_ROOT, title: 'Auf dieser Seite nicht verfügbar', enabled: false, contexts: ['editable'] });
+        return;
+    }
+    if (!(await isUnlocked())) {
+        menuCreate({ id: 'onv-locked', parentId: MENU_ROOT, title: 'Tresor gesperrt – Popup öffnen', contexts: ['editable'] });
+        return;
+    }
+    const r = await fetchEntries();
+    const matches = (r.entries || []).filter(e => VaultUrl.matches(e.url, tabUrl)).slice(0, 8);
+    if (!matches.length) {
+        menuCreate({ id: 'onv-none', parentId: MENU_ROOT, title: 'Kein Eintrag für diese Seite', enabled: false, contexts: ['editable'] });
+        return;
+    }
+    matches.forEach(e => {
+        const pid = 'onv-e-' + e.id;
+        const label = (e.title || 'Eintrag') + (e.username ? ' (' + e.username + ')' : '');
+        menuCreate({ id: pid, parentId: MENU_ROOT, title: label.slice(0, 60), contexts: ['editable'] });
+        menuCreate({ id: pid + '-user', parentId: pid, title: 'Benutzername einfügen', contexts: ['editable'], enabled: !!e.username });
+        menuCreate({ id: pid + '-pass', parentId: pid, title: 'Passwort einfügen', contexts: ['editable'] });
+        if (e.has_totp) menuCreate({ id: pid + '-totp', parentId: pid, title: '2FA-Code einfügen', contexts: ['editable'] });
+    });
+}
+async function refreshMenuForActiveTab() {
+    try {
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        await rebuildContextMenu(tab && tab.url);
+    } catch (e) { /* ignore */ }
+}
+if (chrome.contextMenus) {
+    chrome.tabs.onActivated.addListener(() => refreshMenuForActiveTab());
+    chrome.tabs.onUpdated.addListener((tabId, info, tab) => { if (info.status === 'complete' && tab.active) rebuildContextMenu(tab.url); });
+    chrome.windows.onFocusChanged.addListener(() => refreshMenuForActiveTab());
+    chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+        if (!tab || !tab.id) return;
+        if (info.menuItemId === 'onv-locked') { await openPopupSafe(); return; }
+        const m = /^onv-e-(\d+)-(user|pass|totp)$/.exec(String(info.menuItemId));
+        if (!m) return;
+        const r = await fetchEntries();
+        const e = (r.entries || []).find(x => String(x.id) === m[1]);
+        if (!e) return;
+        let value = '';
+        if (m[2] === 'user') value = e.username || '';
+        else if (m[2] === 'pass') value = (await fetchPassword(e.id)) || '';
+        else { const t = await fetchTotp(e.id); value = t && t.code || ''; }
+        if (!value) return;
+        try {
+            await chrome.tabs.sendMessage(tab.id, { type: 'VAULT_INSERT', value, kind: m[2], frameId: info.frameId }, { frameId: info.frameId || 0 });
+        } catch (err) {
+            // Seite ohne Content-Script (z. B. noch nicht geladen): in die Zwischenablage legen.
+            await writeClipboard(value);
+            if (m[2] !== 'user') scheduleClipClear(value);
+        }
+    });
+    refreshMenuForActiveTab();
+}
+
+// ── Favoriten ───────────────────────────────────────────────────────────────
+async function toggleFavorite(entryId) {
+    if ((await apiVersion()) < 3) return { ok: false, error: 'Server zu alt.' };
+    const r = await apiCall(`/api/vault/extension/entries/${entryId}/favorite`, postOpts(''));
+    if (r.ok) {
+        // Nur das Flag im Cache drehen – keine Neuladung nötig.
+        (cachedEntries || []).forEach(e => { if (String(e.id) === String(entryId)) e.favorite = !!r.favorite; });
+    }
+    return r;
+}
 
 // ── Tastenkürzel: Anmeldung ausfüllen ───────────────────────────────────────
 // Genau ein passender Eintrag → sofort ausfüllen; sonst (oder gesperrt) das Popup.
@@ -529,6 +637,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     }
     if (msg.type === 'PASSKEY_DELETE') {
         apiCall(`/api/vault/extension/passkeys/${msg.id}/delete`, postOpts('')).then(r => { if (r.ok) { cachedEntries = null; cacheTime = 0; } sendResponse(r); });
+        return true;
+    }
+    if (msg.type === 'TOGGLE_FAVORITE') { toggleFavorite(msg.id).then(sendResponse); return true; }
+    if (msg.type === 'DEVICE_KEYS') { apiCall('/api/vault/extension/device-keys').then(sendResponse); return true; }
+    if (msg.type === 'DEVICE_KEY_BEGIN') { apiCall('/api/vault/extension/device-keys/register/begin', postOpts('')).then(sendResponse); return true; }
+    if (msg.type === 'DEVICE_KEY_COMPLETE') { apiCall('/api/vault/extension/device-keys/register/complete', postOpts(formBody(msg.data || {}))).then(sendResponse); return true; }
+    if (msg.type === 'DEVICE_KEY_DELETE') { apiCall(`/api/vault/extension/device-keys/${msg.id}/delete`, postOpts('')).then(sendResponse); return true; }
+    if (msg.type === 'UNLOCK_DEVICE_BEGIN') { unlockDeviceBegin().then(sendResponse); return true; }
+    if (msg.type === 'UNLOCK_DEVICE') { unlockDevice(msg.assertion).then(sendResponse); return true; }
+    if (msg.type === 'OPEN_UNLOCK_WINDOW') {
+        chrome.windows.create({ url: chrome.runtime.getURL('unlock.html'), type: 'popup', width: 400, height: 360 }, () => { void chrome.runtime.lastError; sendResponse({ ok: true }); });
         return true;
     }
     if (msg.type === 'SET_PENDING_CAPTURE') { setPendingCapture(sender.tab?.id, msg.data); sendResponse({ ok: true }); return true; }

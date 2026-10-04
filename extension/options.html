@@ -265,6 +265,14 @@ label.control-label {
                 <span class="form-text">Nach dem Ausf&uuml;llen eines Eintrags mit 2FA wird beim n&auml;chsten 2FA-Feld &ndash; auch auf einer Folgeseite &ndash; automatisch ein frischer Code in die Zwischenablage gelegt. Einf&uuml;gen gen&uuml;gt dann mit <strong>Strg&nbsp;+&nbsp;V</strong>.</span>
             </div>
             <div class="btn-group">
+                <div class="form-group" id="deviceKeyGroup" style="display:none;margin-top:14px;">
+                    <label class="control-label">Entsperren mit dem Gerät</label>
+                    <div style="font-size:12px;margin-bottom:6px;">Windows Hello, Touch ID oder ein Sicherheitsschlüssel entsperrt den Tresor statt des PIN.
+                        Zum Einrichten muss der Tresor gerade entsperrt sein (PIN im Popup eingeben); der PIN bleibt als Rückfall.</div>
+                    <div id="deviceKeyList" style="font-size:12px;margin-bottom:6px;"></div>
+                    <button class="btn btn-default btn-sm" id="btnDeviceRegister" type="button">Dieses Gerät registrieren</button>
+                    <span id="deviceKeyMsg" style="font-size:12px;margin-left:8px;"></span>
+                </div>
                 <div class="form-group" style="margin-top:14px;">
                     <label class="control-label">Tastenkürzel</label>
                     <div style="font-size:12px;">Anmeldung ausfüllen: <code id="shortcutKey">Strg + Umschalt + L</code>

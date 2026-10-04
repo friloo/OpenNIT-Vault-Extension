@@ -32,6 +32,8 @@ Die Erweiterung ist ein **Manifest-V3-Client** ohne eigenen Server. Sie besteht 
 | `urlmatch.js` | Gemeinsame Zuordnung Eintrag ↔ Seite (`VaultUrl`), geladen in allen drei Kontexten – damit Vorschlagsliste und Sicherheitswarnung dieselbe Regel anwenden. |
 | `passkey-page.js` | Läuft **im Kontext der Webseite** (`world: MAIN`, `document_start`): überschreibt `navigator.credentials.create/get` für Public-Key-Credentials und reicht Anfragen per `postMessage` an die Brücke. Sieht nie Schlüsselmaterial, nur Signaturen und öffentliche Daten. |
 | `passkey-bridge.js` | Isolierte Welt, `document_start`: prüft die Relying Party gegen die Seitenadresse, holt Passkeys vom Worker, zeigt Auswahl-/Speichern-Dialog (Shadow DOM) und beantwortet das Seitenskript. Für die Autofill-Variante (`mediation: conditional`) stellt es die Passkeys der Vorschlagsliste in `content.js` bereit. |
+| `generator.js` | Passwortgenerator (`VaultGen`), geladen im Popup und als Content-Script – damit „Starkes Passwort erzeugen" auf der Seite und der Generator im Popup dieselben Regeln nutzen. |
+| `unlock.html` / `unlock.js` | Eigenes kleines Fenster für die Geräte-Entsperrung: WebAuthn braucht ein normales Erweiterungsfenster, kein Toolbar-Popup. Chrome verwendet dabei den vollständigen Origin `chrome-extension://…` als Relying-Party-ID; der Server prüft gegen diesen Hash. |
 
 ## Nachrichten (Auszug)
 
@@ -51,6 +53,10 @@ Die Erweiterung ist ein **Manifest-V3-Client** ohne eigenen Server. Sie besteht 
 | `GET_FIELDS` / `GET_ENTRY_PASSKEYS` | popup → bg | Zusatzfelder bzw. Passkeys eines Eintrags **on demand** |
 | `PASSKEYS_FOR_RP` / `PASSKEY_CREATE` / `PASSKEY_ASSERT` / `PASSKEY_DELETE` | bridge/popup → bg | Passkeys je Relying Party; anlegen; Anmeldung signieren lassen (nur `clientDataHash` geht zum Server); löschen |
 | `SET_PENDING_CAPTURE` / `TAKE_PENDING_CAPTURE` / `CAPTURE_DECISION` | content → bg | Beim Anmelden erfasste Zugangsdaten hinterlegen (nur im Speicher, je Tab, 90 s), bewerten lassen (speichern/aktualisieren/nichts), Entscheidung ausführen |
+| `TOGGLE_FAVORITE` | popup → bg | Favorit umschalten (Server ≥ 3) |
+| `DEVICE_KEYS` / `DEVICE_KEY_BEGIN` / `DEVICE_KEY_COMPLETE` / `DEVICE_KEY_DELETE` | options → bg | Geräteschlüssel (WebAuthn) auflisten, registrieren (Challenge → `navigator.credentials.create` in der Optionsseite → Attestierung zum Server), entfernen |
+| `OPEN_UNLOCK_WINDOW` / `UNLOCK_DEVICE_BEGIN` / `UNLOCK_DEVICE` | popup/unlock → bg | Entsperr-Fenster (`unlock.html`) öffnen; Challenge holen; Signatur des Geräts zum Server, der das Entsperr-Fenster setzt |
+| `VAULT_INSERT` | bg → content | Kontextmenü: Wert in das aktive Feld einfügen (sonst Zwischenablage) |
 
 ## Server-API (in OpenNIT)
 
@@ -63,6 +69,10 @@ Alle Endpunkte unter `/api/vault/extension/` mit `Authorization: Bearer <token>`
 - `GET  /targets` – persönliche Ordner sowie Teams mit Schreibrecht und deren Ordner
 - `GET  /entries/{id}/fields` – Zusatzfelder (geheime Felder im Audit-Log)
 - `POST /entries/{id}/password/check` – stimmt ein Passwort mit dem gespeicherten überein? (nur `match`, kein Klartext)
+- `POST /entries/{id}/favorite` – Favorit umschalten; `GET /entries` liefert `favorite` und `last_used_at` (Server ≥ 3)
+- `GET /device-keys` · `POST /device-keys/register/begin|complete` · `POST /device-keys/{id}/delete` – Geräteschlüssel
+  für das Entsperren (Registrieren nur entsperrt); `POST /unlock/device/begin` · `POST /unlock/device` – Entsperren per
+  Signatur, gleiches Fenster wie beim PIN
 - `GET  /passkeys?rp_id=` · `POST /passkeys` · `POST /passkeys/{id}/assert` · `POST /passkeys/{id}/delete` · `GET /entries/{id}/passkeys`
   – Passkeys: Der Server erzeugt das Schlüsselpaar und signiert (`authData || clientDataHash`, ES256, Zähler 0,
   Attestierung `none`); der private Schlüssel bleibt verschlüsselt im Eintragskontext (VMK/TVK)

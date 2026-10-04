@@ -5,6 +5,31 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+### Hinzugefügt
+- **Entsperren mit dem Gerät:** Windows Hello, Touch ID oder ein Sicherheitsschlüssel lässt sich in den
+  Einstellungen registrieren (nur im entsperrten Zustand, also nach PIN-Eingabe) und ersetzt danach den
+  PIN: Auf dem Sperrschirm erscheint „Mit Gerät entsperren", ein kleines Fenster fragt das Gerät, der
+  Server prüft die Signatur. Der PIN bleibt als Rückfall. Benötigt Server-Schnittstelle 3.
+- **Starkes Passwort auf Registrierungsseiten:** Erkennt die Erweiterung ein Feld für ein neues Passwort
+  (Registrierung, Passwortwechsel, Wiederholungsfeld), steht „Starkes Passwort erzeugen" oben in der
+  Vorschlagsliste. Es füllt das Feld samt Wiederholung; beim Absenden folgt der Speichern-Hinweis.
+- **Favoriten und „zuletzt verwendet":** Ohne Treffer für die aktuelle Seite zeigt das Popup zuerst die
+  Favoriten, dann die fünf zuletzt verwendeten Einträge. Ein Stern in der Detailansicht schaltet den
+  Favoriten um (derselbe wie im Web-Tresor); Passwort- und 2FA-Abrufe zählen als Verwendung.
+- **Kontextmenü:** Rechtsklick in ein Eingabefeld → „OpenNIT Vault" → Eintrag → Benutzername, Passwort
+  oder 2FA-Code einfügen. Hilft auf Seiten, deren Felder die automatische Erkennung nicht trifft.
+- **Dunkler Modus für die Elemente auf der Seite:** Vorschlagsliste, Speichern-Hinweis und Passkey-Dialoge
+  folgen jetzt dem Farbschema des Systems; bisher waren sie immer hell.
+- Einstellungen und Popup erkennen die Server-Schnittstelle 3 (Favoriten, Geräte-Entsperrung).
+
+### Behoben
+- **Kein „Passwort speichern?" mehr, wenn die Seite schon einen Eintrag hat:** Der Hinweis erschien auch
+  nach einer Anmeldung mit einem Zugang aus dem Tresor, sobald der erfasste Benutzername nicht exakt zum
+  Eintrag passte – etwa bei mehrstufigen Anmeldungen, bei denen die Passwortseite kein Benutzerfeld mehr
+  zeigt. Gibt es für die Seite bereits einen Eintrag, schlägt die Erweiterung das Speichern jetzt nie vor.
+  „Passwort aktualisieren?" kommt weiterhin nur, wenn zum selben Benutzernamen nachweislich ein anderes
+  Passwort verwendet wurde.
+
 ## [2.7.0] - 2026-09-24
 
 ### Hinzugefügt

@@ -24,6 +24,12 @@ der Seite bereitstehen: `passkey-page.js` im Kontext der Seite (`world: MAIN`) �
 `passkey-bridge.js` (isolierte Welt) prüft die Relying Party gegen die Seitenadresse, spricht mit dem
 Hintergrund-Worker und zeigt die Auswahl. Beides braucht keine zusätzliche Berechtigung.
 
+## `contextMenus`
+
+**Warum:** Der Eintrag „OpenNIT Vault" im Kontextmenü von Eingabefeldern (Benutzername, Passwort oder
+2FA-Code einfügen). Die Untermenüs werden je aktivem Tab aus den passenden Einträgen gebildet; Werte werden
+erst beim Klick abgerufen.
+
 ## `commands` (Tastenkürzel)
 
 Ein Kürzel „Anmeldung ausfüllen" (Standard Strg + Umschalt + L). Keine Berechtigung im Sinne des Stores;

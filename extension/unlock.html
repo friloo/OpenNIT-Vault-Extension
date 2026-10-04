@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>OpenNIT Vault – Entsperren</title>
+<style>
+    :root { --brand:#4f46e5; --ink:#1f2330; --muted:#5b6478; --bg:#f6f7fb; --card:#fff; --line:#e3e6ef; --danger:#dc3545; --ok:#198754; }
+    @media (prefers-color-scheme: dark) { :root { --ink:#e6e8ef; --muted:#9aa3b5; --bg:#15171f; --card:#1e2130; --line:#2e3243; } }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; background:var(--bg); color:var(--ink); display:flex; align-items:center; justify-content:center; min-height:100vh; }
+    .card { width:320px; background:var(--card); border:1px solid var(--line); border-radius:14px; padding:22px 20px; text-align:center; box-shadow:0 10px 32px rgba(31,35,48,.12); }
+    .icon { width:54px; height:54px; border-radius:50%; background:#eef0f7; color:var(--brand); display:inline-flex; align-items:center; justify-content:center; margin-bottom:10px; }
+    h1 { font-size:15px; margin:0 0 4px; }
+    p { font-size:12.5px; color:var(--muted); margin:0 0 14px; line-height:1.5; }
+    button { width:100%; padding:10px; border-radius:10px; border:none; background:var(--brand); color:#fff; font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:default; }
+    .msg { min-height:16px; font-size:12px; margin-top:10px; color:var(--danger); }
+    .msg.ok { color:var(--ok); }
+</style>
+</head>
+<body>
+<div class="card">
+    <div class="icon"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12a10 10 0 1 1 20 0 10 10 0 0 1-20 0z"/><path d="M12 8v4l2 2"/></svg></div>
+    <h1>Mit dem Gerät entsperren</h1>
+    <p id="hint">Bestätige mit Windows Hello, Touch ID oder deinem Sicherheitsschlüssel.</p>
+    <button id="btnGo">Jetzt bestätigen</button>
+    <div class="msg" id="msg"></div>
+</div>
+<script src="unlock.js"></script>
+</body>
+</html>

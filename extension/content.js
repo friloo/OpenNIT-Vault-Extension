@@ -26,6 +26,18 @@ const RE_PASS_NEG = /(hint|frage|question|reminder|recovery|forgot|vergessen)/i;
 const RE_OTP      = /(otp|totp|2fa|mfa|one[-_ ]?time|einmal|verification|verify|verifizier|authenticat|auth[-_ ]?code|security[-_ ]?code|sms[-_ ]?code|passcode|one_?time_?code|2[-_ ]?step|two[-_ ]?factor|bestätigungscode|einmalkennwort|einmalpasswort)/i;
 const RE_CODEONLY = /(\b|_)(code|pin|token)(\b|_)/i;
 
+// ── Farben: folgen dem Farbschema des Systems ───────────────────────────────
+const DARK = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+const C = DARK ? {
+    bg: '#1e2130', line: '#2e3243', sep: '#262a3a', text: '#e6e8ef', muted: '#9aa3b5', hover: '#262a3a',
+    footer: '#181b26', teamBg: '#3b2f6b', teamText: '#c4b5fd', brand: '#a5b4fc', chipBg: '#0c4a6e', chipLine: '#075985', chipText: '#bae6fd',
+    pkBg: '#0c4a6e', pkText: '#bae6fd', shadow: '0 10px 32px rgba(0,0,0,.55)', empty: '#6b7280',
+} : {
+    bg: '#fff', line: '#e3e6ef', sep: '#f1f3f5', text: '#1f2330', muted: '#79839a', hover: '#f5f6fb',
+    footer: '#f6f7fb', teamBg: '#ede9fe', teamText: '#6d28d9', brand: '#4f46e5', chipBg: '#e0f2fe', chipLine: '#bae0fd', chipText: '#0369a1',
+    pkBg: '#e0f2fe', pkText: '#0369a1', shadow: '0 10px 32px rgba(31,35,48,.20)', empty: '#aab2c3',
+};
+
 // ── kleine Helfer ───────────────────────────────────────────────────────────
 function lc(s) { return String(s || '').toLowerCase(); }
 function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -94,6 +106,19 @@ function isPasswordField(el) {
         if (RE_PASS.test(s) && !RE_PASS_NEG.test(s) && !RE_USER.test(lc(el.name + ' ' + el.id))) return true;
     }
     return false;
+}
+
+// Feld für ein NEUES Passwort (Registrierung, Passwortwechsel): ausgezeichnet
+// per autocomplete, erkennbar am Namen oder an einem zweiten Passwortfeld
+// (Wiederholung) im selben Bereich.
+const RE_NEWPW = /(new|neu|confirm|repeat|wiederhol|best(ä|ae)tig|register|signup|sign[-_ ]?up|create|anlegen|verify)/i;
+function isNewPasswordField(el) {
+    if (!isPasswordField(el)) return false;
+    const a = ac(el);
+    if (a.includes('current-password')) return false;
+    if (a.includes('new-password')) return true;
+    if (RE_NEWPW.test(sig(el))) return true;
+    return collectInputs(scopeOf(el)).filter(f => f !== el && isPasswordField(f) && isVisible(f)).length >= 1;
 }
 
 function isOtpField(el) {
@@ -224,10 +249,30 @@ function init() {
             sendResponse({ ok: true });
             return true;
         }
+        if (msg && msg.type === 'VAULT_INSERT') {
+            const el = deepActiveElement();
+            if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) {
+                if (el.isContentEditable) { try { document.execCommand('insertText', false, msg.value); } catch {} }
+                else setFieldValue(el, msg.value);
+                sendResponse({ ok: true });
+            } else {
+                vaultClipCopy(msg.value);
+                showToastNotice(msg.kind === 'user' ? 'Benutzername kopiert' : 'In die Zwischenablage kopiert');
+                sendResponse({ ok: true, copied: true });
+            }
+            return true;
+        }
     });
     chrome.runtime.sendMessage({ type: 'CHECK_STATUS' }, resp => { if (resp && resp.app_name) appLabel = resp.app_name; });
     // Nach einem Seitenwechsel liegt ggf. eine erfasste Anmeldung vom vorigen Schritt vor.
     if (window.top === window) setTimeout(checkCapture, 600);
+}
+
+// Aktives Element auch hinter offenen Shadow-Roots.
+function deepActiveElement() {
+    let el = document.activeElement;
+    while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+    return el;
 }
 
 // Vom Popup angestoßenes Ausfüllen (ohne fokussiertes Feld): bestes
@@ -336,14 +381,25 @@ function setSelected(items, idx) {
 function showSuggestions(field) {
     const gen = ++showGen;
     const mode = fieldKind(field) === 'otp' ? 'otp' : 'login';
+    const offerGen = mode === 'login' && isNewPasswordField(field);
     chrome.runtime.sendMessage({ type: 'GET_MATCHING_ENTRIES', url: location.href }, resp => {
         if (gen !== showGen) return;
         let entries = (resp && resp.entries || []).filter(e => VaultUrl.matches(e.url, location.href));
         if (mode === 'otp') entries = entries.filter(e => e.has_totp);
         const cond = mode === 'login' ? window.__onvConditionalPasskey : null;
-        if (!entries.length && !(cond && cond.passkeys && cond.passkeys.length)) { hideDrop(); return; }
-        if (document.contains(field) && isVisible(field)) renderDrop(field, entries, mode);
+        if (!entries.length && !offerGen && !(cond && cond.passkeys && cond.passkeys.length)) { hideDrop(); return; }
+        if (document.contains(field) && isVisible(field)) renderDrop(field, entries, mode, offerGen);
     });
+}
+
+// Neues Passwort erzeugen und in das Feld sowie dessen Wiederholung setzen.
+// Beim Absenden bietet die Erweiterung dann das Speichern an.
+function fillGeneratedPassword(field) {
+    const pw = VaultGen.generate(VaultGen.DEFAULT_LENGTH, true);
+    const targets = [field].concat(collectInputs(scopeOf(field)).filter(f => f !== field && isPasswordField(f) && isVisible(f)));
+    targets.forEach(f => setFieldValue(f, pw));
+    try { field.focus({ preventScroll: true }); } catch {}
+    showToastNotice('Starkes Passwort eingesetzt – nach dem Absenden bietet ' + appLabel + ' das Speichern an');
 }
 
 function repositionDrop() {
@@ -356,7 +412,7 @@ function repositionDrop() {
     drop.style.width = Math.max(r.width, 300) + 'px';
 }
 
-function renderDrop(field, entries, mode) {
+function renderDrop(field, entries, mode, offerGen) {
     hideDrop();
     const rect = field.getBoundingClientRect();
     if (rect.width === 0) return;
@@ -365,15 +421,15 @@ function renderDrop(field, entries, mode) {
     drop.id = DROPDOWN_ID;
     Object.assign(drop.style, {
         position: 'fixed', top: (rect.bottom + 4) + 'px', left: rect.left + 'px',
-        width: Math.max(rect.width, 300) + 'px', background: '#fff', border: '1px solid #e3e6ef',
-        borderRadius: '12px', boxShadow: '0 10px 32px rgba(31,35,48,.20)', zIndex: '2147483647',
+        width: Math.max(rect.width, 300) + 'px', background: C.bg, border: '1px solid ' + C.line,
+        borderRadius: '12px', boxShadow: C.shadow, zIndex: '2147483647',
         fontFamily: '-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif', fontSize: '13px',
-        overflow: 'hidden', maxHeight: '320px', overflowY: 'auto', color: '#1f2330',
+        overflow: 'hidden', maxHeight: '320px', overflowY: 'auto', color: C.text,
     });
 
     // Hover-/Auswahl-Highlight (scoped auf unser Dropdown – page-safe)
     const styleEl = document.createElement('style');
-    styleEl.textContent = '#' + DROPDOWN_ID + ' .vi:hover,#' + DROPDOWN_ID + ' .vi.selected{background:#f5f6fb !important;}';
+    styleEl.textContent = '#' + DROPDOWN_ID + ' .vi:hover,#' + DROPDOWN_ID + ' .vi.selected{background:' + C.hover + ' !important;}';
     drop.appendChild(styleEl);
 
     const hd = document.createElement('div');
@@ -386,6 +442,26 @@ function renderDrop(field, entries, mode) {
         + esc(appLabel) + (mode === 'otp' ? ' &middot; 2FA' : ' &middot; Vault');
     drop.appendChild(hd);
 
+    // Neues Passwort: Generator als ersten Vorschlag anbieten.
+    if (offerGen) {
+        const item = document.createElement('div');
+        item.className = 'vi';
+        Object.assign(item.style, {
+            padding: '9px 13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px',
+            borderBottom: '1px solid ' + C.sep, background: C.bg,
+        });
+        item.innerHTML = '<span style="width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;background:' + C.chipBg + ';color:' + C.chipText + ';flex-shrink:0;">'
+            + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg></span>'
+            + '<div style="flex:1;min-width:0;"><div style="font-weight:600;color:' + C.text + ';font-size:12.5px;">Starkes Passwort erzeugen</div>'
+            + '<div style="color:' + C.muted + ';font-size:11px;">' + VaultGen.DEFAULT_LENGTH + ' Zeichen, Buchstaben, Ziffern und Sonderzeichen</div></div>';
+        item.addEventListener('mouseenter', () => {
+            [...drop.querySelectorAll('.vi')].forEach(i => i.classList.remove('selected'));
+            item.classList.add('selected');
+        });
+        item.addEventListener('mousedown', ev => { ev.preventDefault(); ev.stopPropagation(); hideDrop(); fillGeneratedPassword(field); });
+        drop.appendChild(item);
+    }
+
     // Wartet die Seite auf einen Passkey (Autofill-Variante), stehen die
     // Passkeys des Tresors für diese Domain oben in der Liste.
     const cond = mode === 'login' ? window.__onvConditionalPasskey : null;
@@ -395,13 +471,13 @@ function renderDrop(field, entries, mode) {
             item.className = 'vi';
             Object.assign(item.style, {
                 padding: '9px 13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px',
-                borderBottom: '1px solid #f1f3f5', background: '#fff',
+                borderBottom: '1px solid ' + C.sep, background: C.bg,
             });
-            item.innerHTML = '<span style="width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;background:#e0f2fe;color:#0369a1;flex-shrink:0;">'
+            item.innerHTML = '<span style="width:22px;height:22px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;background:' + C.pkBg + ';color:' + C.pkText + ';flex-shrink:0;">'
                 + '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="15" r="4"/><path d="M10.85 12.15 19 4"/><path d="M18 5l2 2"/><path d="M15 8l2 2"/></svg></span>'
-                + '<div style="flex:1;min-width:0;"><div style="font-weight:600;color:#1f2330;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;">' + esc(k.title) + '</div>'
-                + '<div style="color:#0369a1;font-size:11px;font-weight:600;">Mit Passkey anmelden' + (k.user_display || k.user_name ? ' &middot; ' + esc(k.user_display || k.user_name) : '') + '</div></div>'
-                + (k.team_name ? '<span style="font-size:9px;background:#ede9fe;color:#6d28d9;border-radius:5px;padding:1.5px 6px;white-space:nowrap;flex-shrink:0;font-weight:700;">' + esc(k.team_name) + '</span>' : '');
+                + '<div style="flex:1;min-width:0;"><div style="font-weight:600;color:' + C.text + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;">' + esc(k.title) + '</div>'
+                + '<div style="color:' + C.pkText + ';font-size:11px;font-weight:600;">Mit Passkey anmelden' + (k.user_display || k.user_name ? ' &middot; ' + esc(k.user_display || k.user_name) : '') + '</div></div>'
+                + (k.team_name ? '<span style="font-size:9px;background:' + C.teamBg + ';color:' + C.teamText + ';border-radius:5px;padding:1.5px 6px;white-space:nowrap;flex-shrink:0;font-weight:700;">' + esc(k.team_name) + '</span>' : '');
             item.addEventListener('mouseenter', () => {
                 [...drop.querySelectorAll('.vi')].forEach(i => i.classList.remove('selected'));
                 item.classList.add('selected');
@@ -417,7 +493,7 @@ function renderDrop(field, entries, mode) {
         item.dataset.id = entry.id;
         Object.assign(item.style, {
             padding: '9px 13px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '10px',
-            borderBottom: '1px solid #f1f3f5', background: '#fff', transition: 'background .1s',
+            borderBottom: '1px solid ' + C.sep, background: C.bg, transition: 'background .1s',
         });
 
         const _hue = vaultHue(entry.title || '?');
@@ -432,22 +508,22 @@ function renderDrop(field, entries, mode) {
         if (entry.has_favicon) {
             chrome.runtime.sendMessage({ type: 'GET_FAVICON', id: entry.id }, r => {
                 if (r && r.dataUrl) {
-                    favSpan.style.background = '#eef0f7';
+                    favSpan.style.background = DARK ? '#2e3243' : '#eef0f7';
                     favSpan.innerHTML = '<img src="' + r.dataUrl + '" alt="" style="width:16px;height:16px;object-fit:contain;">';
                 }
             });
         }
 
         const team = entry.team_name
-            ? '<span style="font-size:9px;background:#ede9fe;color:#6d28d9;border-radius:5px;padding:1.5px 6px;white-space:nowrap;flex-shrink:0;font-weight:700;">' + esc(entry.team_name) + '</span>'
+            ? '<span style="font-size:9px;background:' + C.teamBg + ';color:' + C.teamText + ';border-radius:5px;padding:1.5px 6px;white-space:nowrap;flex-shrink:0;font-weight:700;">' + esc(entry.team_name) + '</span>'
             : '';
         const sub = mode === 'otp'
-            ? '<span style="color:#4f46e5;font-size:11px;font-weight:600;">2FA-Code einfügen</span>'
-            : '<div style="color:#79839a;font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (esc(entry.username) || '<em style="color:#aab2c3">Kein Benutzername</em>') + '</div>';
+            ? '<span style="color:' + C.brand + ';font-size:11px;font-weight:600;">2FA-Code einfügen</span>'
+            : '<div style="color:' + C.muted + ';font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + (esc(entry.username) || '<em style="color:' + C.empty + '">Kein Benutzername</em>') + '</div>';
 
         const info = document.createElement('div');
         info.style.cssText = 'flex:1;min-width:0;';
-        info.innerHTML = '<div style="font-weight:600;color:#1f2330;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;">'
+        info.innerHTML = '<div style="font-weight:600;color:' + C.text + ';white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;">'
             + esc(entry.title) + '</div>' + sub;
 
         item.appendChild(favSpan);
@@ -467,8 +543,8 @@ function renderDrop(field, entries, mode) {
         if (mode === 'login' && entry.has_totp) {
             const chip = document.createElement('button');
             Object.assign(chip.style, {
-                background: '#e0f2fe', border: '1px solid #bae0fd', borderRadius: '6px', padding: '2px 7px',
-                fontSize: '9px', fontWeight: '700', color: '#0369a1', cursor: 'pointer', flexShrink: '0',
+                background: C.chipBg, border: '1px solid ' + C.chipLine, borderRadius: '6px', padding: '2px 7px',
+                fontSize: '9px', fontWeight: '700', color: C.chipText, cursor: 'pointer', flexShrink: '0',
                 letterSpacing: '.03em', fontFamily: 'inherit',
             });
             chip.textContent = '2FA';
@@ -493,7 +569,7 @@ function renderDrop(field, entries, mode) {
     });
 
     const ft = document.createElement('div');
-    Object.assign(ft.style, { padding: '5px 12px', color: '#79839a', fontSize: '10px', textAlign: 'center', background: '#f6f7fb', borderTop: '1px solid #edeff4' });
+    Object.assign(ft.style, { padding: '5px 12px', color: C.muted, fontSize: '10px', textAlign: 'center', background: C.footer, borderTop: '1px solid ' + C.line });
     ft.innerHTML = '&uarr;&darr; Navigieren &middot; Enter Ausw&auml;hlen &middot; Esc Schlie&szlig;en';
     drop.appendChild(ft);
 
@@ -698,12 +774,12 @@ function showCaptureBanner(c) {
     const root = host.attachShadow({ mode: 'closed' });
     const style = document.createElement('style');
     style.textContent = ':host{all:initial}'
-        + '.b{position:fixed;top:16px;right:16px;width:340px;max-width:calc(100vw - 32px);background:#fff;border-radius:14px;box-shadow:0 14px 40px rgba(31,35,48,.28);z-index:2147483647;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:#1f2330}'
+        + '.b{position:fixed;top:16px;right:16px;width:340px;max-width:calc(100vw - 32px);background:' + C.bg + ';border-radius:14px;box-shadow:' + C.shadow + ';z-index:2147483647;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;font-size:13px;color:' + C.text + '}'
         + '.hd{padding:9px 13px;background:linear-gradient(135deg,#4f46e5 0%,#5b6ee8 45%,#3c8dbc 100%);color:#fff;font-weight:700;font-size:10.5px;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:7px}'
-        + '.bd{padding:12px 13px 11px}.t{font-weight:700;font-size:13.5px;margin-bottom:3px}.s{color:#5b6478;font-size:12px;margin-bottom:8px;line-height:1.45}'
-        + 'select{width:100%;box-sizing:border-box;padding:7px 9px;border:1.5px solid #e3e6ef;border-radius:9px;font:inherit;font-size:12px;background:#fff;color:#1f2330;margin-bottom:8px}'
-        + '.row{display:flex;gap:6px}button{flex:1;padding:8px 6px;border-radius:9px;border:1.5px solid #e3e6ef;background:#fff;font:inherit;font-size:11.5px;font-weight:600;color:#5b6478;cursor:pointer;white-space:nowrap}'
-        + 'button:hover{background:#f5f6fb}button.p{background:#4f46e5;border-color:#4f46e5;color:#fff}button.p:hover{background:#4338ca}.m{font-size:11px;color:#dc3545;min-height:13px;margin-top:5px}';
+        + '.bd{padding:12px 13px 11px}.t{font-weight:700;font-size:13.5px;margin-bottom:3px}.s{color:' + C.muted + ';font-size:12px;margin-bottom:8px;line-height:1.45}'
+        + 'select{width:100%;box-sizing:border-box;padding:7px 9px;border:1.5px solid ' + C.line + ';border-radius:9px;font:inherit;font-size:12px;background:' + C.bg + ';color:' + C.text + ';margin-bottom:8px}'
+        + '.row{display:flex;gap:6px}button{flex:1;padding:8px 6px;border-radius:9px;border:1.5px solid ' + C.line + ';background:' + C.bg + ';font:inherit;font-size:11.5px;font-weight:600;color:' + C.muted + ';cursor:pointer;white-space:nowrap}'
+        + 'button:hover{background:' + C.hover + '}button.p{background:#4f46e5;border-color:#4f46e5;color:#fff}button.p:hover{background:#4338ca}.m{font-size:11px;color:#dc3545;min-height:13px;margin-top:5px}';
     root.appendChild(style);
     const box = document.createElement('div');
     box.className = 'b';
