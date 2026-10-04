@@ -159,8 +159,104 @@ function loadConnStatus() {
             if (data.app_name) { $('optTitle').textContent = 'OpenNIT Vault'; }
             if (data.user) { $('headerUser').textContent = data.app_name ? (data.user + ' · ' + data.app_name) : data.user; $('headerStatus').style.display = ''; }
             showServerCompat(Number(data.api_version || 0));
+            initDeviceKeys(Number(data.api_version || 0) >= 3, !!data.pin_enabled);
         }
     });
+}
+
+// ── Entsperren mit dem Gerät (WebAuthn) ─────────────────────────────────────
+function b64url(buf) {
+    let s = '';
+    new Uint8Array(buf).forEach(b => { s += String.fromCharCode(b); });
+    return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function fromB64url(s) {
+    s = String(s || '').replace(/-/g, '+').replace(/_/g, '/');
+    while (s.length % 4) s += '=';
+    const bin = atob(s), out = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+    return out;
+}
+function send(msg) { return new Promise(r => chrome.runtime.sendMessage(msg, x => r(chrome.runtime.lastError ? null : x))); }
+function deviceLabel() {
+    const ua = navigator.userAgent;
+    const os = /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'macOS' : /CrOS/.test(ua) ? 'ChromeOS' : /Linux/.test(ua) ? 'Linux' : 'Gerät';
+    const br = /Edg\//.test(ua) ? 'Edge' : /Vivaldi/.test(ua) ? 'Vivaldi' : /Brave/.test(ua) ? 'Brave' : 'Chrome';
+    return os + ' · ' + br;
+}
+function initDeviceKeys(available, pinEnabled) {
+    const grp = $('deviceKeyGroup');
+    if (!grp) return;
+    if (!available || !window.PublicKeyCredential) { grp.style.display = 'none'; return; }
+    grp.style.display = '';
+    const msg = $('deviceKeyMsg');
+    if (!pinEnabled) {
+        msg.style.color = '#b45309';
+        msg.textContent = 'Es ist kein Tresor-PIN aktiv – ohne PIN gibt es keine Sperre, die ein Gerät aufheben könnte.';
+    }
+    loadDeviceKeys();
+    $('btnDeviceRegister').addEventListener('click', registerDeviceKey);
+}
+async function loadDeviceKeys() {
+    const host = $('deviceKeyList');
+    const r = await send({ type: 'DEVICE_KEYS' });
+    if (!r || !r.ok) { host.textContent = r && r.error ? r.error : ''; return; }
+    host.innerHTML = '';
+    (r.keys || []).forEach(k => {
+        const row = document.createElement('div');
+        row.style.cssText = 'display:flex;align-items:center;gap:8px;margin-bottom:4px;';
+        const used = k.last_used_at ? 'zuletzt ' + String(k.last_used_at).slice(0, 16) : 'noch nicht verwendet';
+        row.innerHTML = '<span style="flex:1;">🔐 ' + esc(k.label) + ' <span style="opacity:.7;">(' + esc(used) + ')</span></span>'
+            + '<button class="btn btn-default btn-xs" type="button" title="Entfernen">Entfernen</button>';
+        row.querySelector('button').addEventListener('click', async () => {
+            if (!confirm('Gerät „' + k.label + '" entfernen?')) return;
+            const d = await send({ type: 'DEVICE_KEY_DELETE', id: k.id });
+            if (d && d.ok) loadDeviceKeys(); else $('deviceKeyMsg').textContent = (d && d.error) || 'Entfernen fehlgeschlagen.';
+        });
+        host.appendChild(row);
+    });
+    if (!host.children.length) host.innerHTML = '<span style="opacity:.7;">Noch kein Gerät registriert.</span>';
+}
+async function registerDeviceKey() {
+    const msg = $('deviceKeyMsg');
+    const btn = $('btnDeviceRegister');
+    btn.disabled = true;
+    msg.style.color = '';
+    msg.textContent = '…';
+    const begin = await send({ type: 'DEVICE_KEY_BEGIN' });
+    if (!begin || !begin.ok) {
+        msg.style.color = '#b45309';
+        msg.textContent = begin && begin.locked ? 'Tresor gesperrt – bitte zuerst im Popup mit dem PIN entsperren.' : ((begin && begin.error) || 'Keine Verbindung zum Server.');
+        btn.disabled = false;
+        return;
+    }
+    let cred;
+    try {
+        cred = await navigator.credentials.create({ publicKey: {
+            rp: { name: begin.rp_name || 'OpenNIT Vault' },
+            user: { id: fromB64url(begin.user.id), name: begin.user.name, displayName: begin.user.display || begin.user.name },
+            challenge: fromB64url(begin.challenge),
+            pubKeyCredParams: [{ type: 'public-key', alg: -7 }, { type: 'public-key', alg: -257 }],
+            authenticatorSelection: { userVerification: 'required', residentKey: 'discouraged' },
+            excludeCredentials: (begin.exclude || []).map(id => ({ type: 'public-key', id: fromB64url(id) })),
+            attestation: 'none', timeout: 60000,
+        } });
+    } catch (e) {
+        msg.style.color = '#b45309';
+        msg.textContent = e && e.name === 'InvalidStateError' ? 'Dieses Gerät ist bereits registriert.'
+            : e && e.name === 'NotAllowedError' ? 'Abgebrochen oder nicht bestätigt.' : ('Fehler: ' + (e && e.message || e));
+        btn.disabled = false;
+        return;
+    }
+    const r = await send({ type: 'DEVICE_KEY_COMPLETE', data: {
+        origin: location.origin,
+        client_data_json: b64url(cred.response.clientDataJSON),
+        attestation_object: b64url(cred.response.attestationObject),
+        label: deviceLabel(),
+    } });
+    btn.disabled = false;
+    if (r && r.ok) { msg.style.color = '#198754'; msg.textContent = 'Gerät registriert.'; loadDeviceKeys(); }
+    else { msg.style.color = '#b45309'; msg.textContent = (r && r.error) || 'Registrierung fehlgeschlagen.'; }
 }
 
 // Der Server nennt den Stand seiner Schnittstelle. Fehlt er oder ist er zu

@@ -14,14 +14,11 @@
 3. **„Entpackte Erweiterung laden"** klicken und den Ordner **`extension/`** auswählen.
 4. Die Erweiterung erscheint in der Liste; per Puzzle-Symbol an die Toolbar anheften.
 
-### B) Aus dem Chrome Web Store
+### B) Aus dem Chrome Web Store (empfohlen)
 
-Sobald veröffentlicht: im Store nach **„OpenNIT Vault"** suchen und **„Hinzufügen"** klicken.
-
-### C) Fertiges ZIP aus dem OpenNIT-Backend
-
-Im OpenNIT-Backend gibt es unter **Administration → Vault-Erweiterung** (`/admin/vault/extension`) einen
-ZIP-Download mit bereits vorausgefüllter Server-URL. Diesen entpacken und wie unter **A)** laden.
+[**OpenNIT Vault im Chrome Web Store**](https://chromewebstore.google.com/detail/opennit-vault/fpiehdghpckoggcbhlojajhjhihommob)
+öffnen und **„Hinzufügen"** klicken. Updates kommen automatisch über den Store. Das OpenNIT-Backend
+verweist unter **Administration → Vault-Erweiterung** auf denselben Eintrag.
 
 ## 2. Anmelden
 

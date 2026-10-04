@@ -26,6 +26,8 @@ deiner selbst gehosteten OpenNIT-Instanz und bietet:
 - 📁 **Ziel beim Anlegen** – Ordner oder Team mit Schreibrecht statt nur persönlicher Tresor
 - 🩺 **Passwort-Gesundheit** – schwache und mehrfach verwendete Passwörter sind markiert; Zusatzfelder und Ablaufdatum in der Detailansicht
 - ⌨️ **Tastenkürzel** Strg + Umschalt + L füllt die Anmeldung aus
+- 👆 **Entsperren mit dem Gerät** – Windows Hello, Touch ID oder Sicherheitsschlüssel statt PIN
+- 🎲 **Starkes Passwort** direkt auf Registrierungsseiten, ⭐ Favoriten und „zuletzt verwendet", Kontextmenü zum Einfügen, dunkler Modus auch auf der Seite
 - ➕ **Neue Einträge anlegen** inkl. **Passwort-Generator**
 - 🔒 **PIN-Sperre** mit demselben PIN wie der Web-Tresor (Dauer frei wählbar, bis „bis Browser schließt")
 - ✏️ **Anlegen, Bearbeiten und Löschen** von Einträgen direkt im Popup
@@ -76,12 +78,11 @@ Erweiterung anheften, Einstellungen öffnen, **Server-URL** eintragen und **„M
 
 Ausführliche Anleitung: [`docs/INSTALL.md`](docs/INSTALL.md).
 
-### Aus dem OpenNIT-Backend
+### Aus dem Chrome Web Store
 
-Jede OpenNIT-Instanz bietet im Backend unter **Admin → Vault-Erweiterung** (`/admin/vault/extension`)
-einen ZIP-Download der Erweiterung (mit vorausgefüllter Server-URL) samt Einrichtungsanleitung. Diese
-generische Variante hier ist für die Veröffentlichung im Chrome Web Store bzw. als eigenständiges
-Repository gedacht.
+Fertig installierbar: [**OpenNIT Vault im Chrome Web Store**](https://chromewebstore.google.com/detail/opennit-vault/fpiehdghpckoggcbhlojajhjhihommob).
+Das OpenNIT-Backend verweist unter **Admin → Vault-Erweiterung** auf diesen Eintrag; eine eingebettete
+Kopie der Erweiterung gibt es in OpenNIT nicht mehr.
 
 ## Konfiguration
 

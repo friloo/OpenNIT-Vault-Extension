@@ -8,7 +8,8 @@
         "storage",
         "alarms",
         "offscreen",
-        "identity"
+        "identity",
+        "contextMenus"
     ],
     "host_permissions": [
         "<all_urls>"
@@ -50,6 +51,7 @@
             ],
             "js": [
                 "urlmatch.js",
+                "generator.js",
                 "content.js"
             ],
             "run_at": "document_idle"

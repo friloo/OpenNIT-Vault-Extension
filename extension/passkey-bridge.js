@@ -70,6 +70,17 @@
         button:hover { background: #f5f6fb; }
         button.p { background: #4f46e5; border-color: #4f46e5; color: #fff; } button.p:hover { background: #4338ca; }
         .lk { display: flex; gap: 8px; align-items: center; background: #fff7ed; color: #9a3412; border-radius: 9px; padding: 9px 11px; font-size: 12px; margin-bottom: 8px; }
+        @media (prefers-color-scheme: dark) {
+            .ov { color: #e6e8ef; background: rgba(0,0,0,.6); }
+            .card { background: #1e2130; box-shadow: 0 18px 48px rgba(0,0,0,.6); }
+            .s, label, button { color: #9aa3b5; }
+            .it { border-color: #2e3243; background: #1e2130; } .it:hover, .it:focus { background: #262a3a; border-color: #a5b4fc; }
+            .ti span { color: #9aa3b5; } .team { background: #3b2f6b; color: #c4b5fd; }
+            select, input { background: #15171f; color: #e6e8ef; border-color: #2e3243; }
+            button { background: #1e2130; border-color: #2e3243; } button:hover { background: #262a3a; }
+            button.p { background: #4f46e5; color: #fff; border-color: #4f46e5; }
+            .lk { background: #3b2a12; color: #fdba74; }
+        }
     `;
 
     function openDialog(build) {
