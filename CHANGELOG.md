@@ -5,6 +5,8 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-04
+
 ### Hinzugefügt
 - **Entsperren mit dem Gerät:** Windows Hello, Touch ID oder ein Sicherheitsschlüssel lässt sich in den
   Einstellungen registrieren (nur im entsperrten Zustand, also nach PIN-Eingabe) und ersetzt danach den
