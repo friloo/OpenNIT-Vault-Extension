@@ -319,14 +319,17 @@ async function evaluateCapture(tabId) {
     const r = await fetchEntries();
     if (!r.entries) return drop();
 
-    const matches  = r.entries.filter(e => VaultUrl.matches(e.url, c.url));
-    const sameUser = matches.filter(e => String(e.username || '').toLowerCase() === String(c.user || '').toLowerCase());
-    if (sameUser.length) {
-        // Unverändertes Passwort → kein Hinweis. Prüfbar nur mit Server ≥ 2.
-        if ((await apiVersion()) < 2) return drop();
+    const matches = r.entries.filter(e => VaultUrl.matches(e.url, c.url));
+    if (matches.length) {
+        // Für diese Seite gibt es bereits einen Zugang im Tresor – „Speichern" wird
+        // dann nie vorgeschlagen. Einzig ein geändertes Passwort zum selben
+        // Benutzernamen führt zu „Aktualisieren"; das ist nur mit Server ≥ 2 prüfbar.
+        const user = String(c.user || '').trim().toLowerCase();
+        const sameUser = user ? matches.filter(e => String(e.username || '').trim().toLowerCase() === user) : [];
+        if (!sameUser.length || (await apiVersion()) < 2) return drop();
         for (const e of sameUser) {
             const chk = await apiCall(`/api/vault/extension/entries/${e.id}/password/check`, postOpts(formBody({ password: c.pw })));
-            if (chk.ok && chk.match) return drop();
+            if (!chk.ok || chk.match) return drop();
         }
         const target = sameUser.find(e => e.can_write !== false);
         if (!target) return drop();

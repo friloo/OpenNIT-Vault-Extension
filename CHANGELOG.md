@@ -5,6 +5,14 @@ Die Erweiterungsversion (`manifest.json`) ist unabhängig von der OpenNIT-Server
 
 ## [Unreleased]
 
+### Behoben
+- **Kein „Passwort speichern?" mehr, wenn die Seite schon einen Eintrag hat:** Der Hinweis erschien auch
+  nach einer Anmeldung mit einem Zugang aus dem Tresor, sobald der erfasste Benutzername nicht exakt zum
+  Eintrag passte – etwa bei mehrstufigen Anmeldungen, bei denen die Passwortseite kein Benutzerfeld mehr
+  zeigt. Gibt es für die Seite bereits einen Eintrag, schlägt die Erweiterung das Speichern jetzt nie vor.
+  „Passwort aktualisieren?" kommt weiterhin nur, wenn zum selben Benutzernamen nachweislich ein anderes
+  Passwort verwendet wurde.
+
 ## [2.7.0] - 2026-09-24
 
 ### Hinzugefügt
